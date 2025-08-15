@@ -1,6 +1,6 @@
 /// <reference types="switch-scripting" />
 // @ts-nocheck
-import { PDFDocument, degrees, rgb } from 'pdf-lib';
+import { PDFDocument, degrees, rgb, StandardFonts } from 'pdf-lib';
 import * as fs from 'fs/promises';
 
 /* ---------- helpers ---------- */
@@ -16,13 +16,13 @@ function gridFit(availW: number, availH: number, cellW: number, cellH: number, g
 /** Draw crop marks for an individual placement */
 function drawIndividualCrops(
   page: any,
-  centerX: number,      // center of the placement cell (in points)
+  centerX: number,
   centerY: number,
-  cutW: number,         // cut width in points
-  cutH: number,         // cut height in points
-  gapIn: number = 0.0625, // 1/16" offset from trim
-  lenIn: number = 0.125,  // 0.125" tick length for perimeter marks
-  strokePt: number = 0.5,   // slightly thicker for better visibility
+  cutW: number,
+  cutH: number,
+  gapIn: number = 0.0625,
+  lenIn: number = 0.125,
+  strokePt: number = 0.5,
   isLeftEdge: boolean,
   isRightEdge: boolean,
   isBottomEdge: boolean,
@@ -32,43 +32,122 @@ function drawIndividualCrops(
 ) {
   const off = pt(gapIn);
   const perimeterLen = pt(lenIn);
-  // Interior marks should stop before entering the bleed area
-  // They extend only into the gap between cards, not into the bleed
-  const maxInteriorLenH = (gapHorizontal - off * 2) * 0.4; // 40% of available horizontal gap space
-  const maxInteriorLenV = (gapVertical - off * 2) * 0.4; // 40% of available vertical gap space
-  const interiorLenH = Math.min(pt(0.03125), maxInteriorLenH); // Max 1/32" or less
-  const interiorLenV = Math.min(pt(0.03125), maxInteriorLenV); // Max 1/32" or less
+  const maxInteriorLenH = (gapHorizontal - off * 2) * 0.4;
+  const maxInteriorLenV = (gapVertical - off * 2) * 0.4;
+  const interiorLenH = Math.min(pt(0.03125), maxInteriorLenH);
+  const interiorLenV = Math.min(pt(0.03125), maxInteriorLenV);
   const k = rgb(0,0,0);
-
-  // Calculate corners of the cut area
   const halfW = cutW / 2;
   const halfH = cutH / 2;
   const xL = centerX - halfW;
   const xR = centerX + halfW;
   const yB = centerY - halfH;
   const yT = centerY + halfH;
-
-  // Top-left corner
   const topLen = isTopEdge ? perimeterLen : interiorLenV;
   const leftLen = isLeftEdge ? perimeterLen : interiorLenH;
-  page.drawLine({ start:{x:xL, y:yT + off}, end:{x:xL, y:yT + off + topLen}, thickness: strokePt, color: k }); // vertical
-  page.drawLine({ start:{x:xL - off - leftLen, y:yT}, end:{x:xL - off, y:yT}, thickness: strokePt, color: k }); // horizontal
-
-  // Top-right corner
+  page.drawLine({ start:{x:xL, y:yT + off}, end:{x:xL, y:yT + off + topLen}, thickness: strokePt, color: k });
+  page.drawLine({ start:{x:xL - off - leftLen, y:yT}, end:{x:xL - off, y:yT}, thickness: strokePt, color: k });
   const rightLen = isRightEdge ? perimeterLen : interiorLenH;
-  page.drawLine({ start:{x:xR, y:yT + off}, end:{x:xR, y:yT + off + topLen}, thickness: strokePt, color: k }); // vertical
-  page.drawLine({ start:{x:xR + off, y:yT}, end:{x:xR + off + rightLen, y:yT}, thickness: strokePt, color: k }); // horizontal
-
-  // Bottom-left corner
+  page.drawLine({ start:{x:xR, y:yT + off}, end:{x:xR, y:yT + off + topLen}, thickness: strokePt, color: k });
+  page.drawLine({ start:{x:xR + off, y:yT}, end:{x:xR + off + rightLen, y:yT}, thickness: strokePt, color: k });
   const bottomLen = isBottomEdge ? perimeterLen : interiorLenV;
-  page.drawLine({ start:{x:xL, y:yB - off}, end:{x:xL, y:yB - off - bottomLen}, thickness: strokePt, color: k }); // vertical
-  page.drawLine({ start:{x:xL - off - leftLen, y:yB}, end:{x:xL - off, y:yB}, thickness: strokePt, color: k }); // horizontal
-
-  // Bottom-right corner
-  page.drawLine({ start:{x:xR, y:yB - off}, end:{x:xR, y:yB - off - bottomLen}, thickness: strokePt, color: k }); // vertical
-  page.drawLine({ start:{x:xR + off, y:yB}, end:{x:xR + off + rightLen, y:yB}, thickness: strokePt, color: k }); // horizontal
+  page.drawLine({ start:{x:xL, y:yB - off}, end:{x:xL, y:yB - off - bottomLen}, thickness: strokePt, color: k });
+  page.drawLine({ start:{x:xL - off - leftLen, y:yB}, end:{x:xL - off, y:yB}, thickness: strokePt, color: k });
+  page.drawLine({ start:{x:xR, y:yB - off}, end:{x:xR, y:yB - off - bottomLen}, thickness: strokePt, color: k });
+  page.drawLine({ start:{x:xR + off, y:yB}, end:{x:xR + off + rightLen, y:yB}, thickness: strokePt, color: k });
 }
 
+/** Draw a small slug line near a long edge (0.25\" in) and center it along that edge.
+ *  Draw this BEFORE crops/art so it sits underneath artwork.
+ */
+function drawSlugLine(page: any, text: string, sheetW: number, sheetH: number, font: any, marginIn: number = 0.25) {
+  const m = pt(marginIn);
+  let size = 7; // default; will downsize if needed
+  const minSize = 4;
+  const isLandscape = sheetW >= sheetH;
+  const k = rgb(0,0,0);
+
+  if (isLandscape) {
+    // Horizontal along bottom edge
+    let maxWidth = sheetW - 2 * m;
+    let tw = font.widthOfTextAtSize(text, size);
+    while (tw > maxWidth && size > minSize) { size -= 0.5; tw = font.widthOfTextAtSize(text, size); }
+    const x = (sheetW - tw) / 2;
+    const y = m; // 0.25" from bottom
+    page.drawText(text, { x, y, size, font, color: k });
+  } else {
+    // Vertical along left edge
+    let maxLen = sheetH - 2 * m;
+    let tw = font.widthOfTextAtSize(text, size);
+    while (tw > maxLen && size > minSize) { size -= 0.5; tw = font.widthOfTextAtSize(text, size); }
+    const x = m; // 0.25" from left
+    const y = (sheetH - tw) / 2; // center along vertical span
+    page.drawText(text, { x, y, size, font, color: k, rotate: degrees(90) });
+  }
+}
+
+/** Draw a teal overlay box with ID information */
+function drawTealOverlay(
+  page: any,
+  centerX: number,
+  centerY: number,
+  cutW: number,
+  cutH: number,
+  orderId: string,
+  lineId: string,
+  font: any,
+  boldFont: any
+) {
+  const halfW = cutW / 2;
+  const halfH = cutH / 2;
+  const xL = centerX - halfW;
+  const yB = centerY - halfH;
+  
+  // Draw teal rectangle with 90% opacity (0.1 transparency)
+  const teal = rgb(0, 0.5, 0.5); // Teal color
+  page.drawRectangle({
+    x: xL,
+    y: yB,
+    width: cutW,
+    height: cutH,
+    color: teal,
+    opacity: 0.9
+  });
+  
+  // Draw text in white
+  const white = rgb(1, 1, 1);
+  const lineHeight = 14;
+  
+  // ID text
+  const idText = `OrderID: ${orderId}`;
+  const idSize = 12;
+  const idWidth = boldFont.widthOfTextAtSize(idText, idSize);
+  const idX = centerX - idWidth / 2;
+  const idY = centerY + lineHeight / 2;
+  
+  page.drawText(idText, {
+    x: idX,
+    y: idY,
+    size: idSize,
+    font: boldFont,
+    color: white
+  });
+  
+  // OrderItemID text
+  const itemText = `OrderItemID: ${lineId}`;
+  const itemSize = 12;
+  const itemWidth = font.widthOfTextAtSize(itemText, itemSize);
+  const itemX = centerX - itemWidth / 2;
+  const itemY = centerY - lineHeight / 2 - 4;
+  
+  page.drawText(itemText, {
+    x: itemX,
+    y: itemY,
+    size: itemSize,
+    font: font,
+    color: white
+  });
+}
 
 /**
  * Build a reusable embedded page that carries its own CropBox.
@@ -112,6 +191,59 @@ async function buildPlacementXObject(
   return embeddedPlacement;
 }
 
+/** Create a cover sheet page that duplicates the first imposed page and adds teal overlays */
+async function createCoverSheet(
+  outDoc: any,
+  firstPageBytes: Uint8Array,
+  sheetWpt: number,
+  sheetHpt: number,
+  cols: number,
+  rows: number,
+  offX: number,
+  offY: number,
+  cutWpt: number,
+  cutHpt: number,
+  gapHpt: number,
+  gapVpt: number,
+  orderId: string,
+  lineId: string,
+  font: any,
+  boldFont: any,
+  slugText: string
+) {
+  // Create a new page for the cover sheet
+  const coverPage = outDoc.addPage([sheetWpt, sheetHpt]);
+  
+  // Draw slug line
+  // drawSlugLine(coverPage, slugText, sheetWpt, sheetHpt, font);
+  
+  // Embed the first imposed page as background
+  const [bgPage] = await outDoc.embedPdf(firstPageBytes, [0]);
+  coverPage.drawPage(bgPage, { x: 0, y: 0 });
+  
+  // Draw teal overlays on each position
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const cellCenterX = offX + c * (cutWpt + gapHpt) + cutWpt / 2;
+      const cellCenterY = offY + r * (cutHpt + gapVpt) + cutHpt / 2;
+      
+      drawTealOverlay(
+        coverPage,
+        cellCenterX,
+        cellCenterY,
+        cutWpt,
+        cutHpt,
+        orderId,
+        lineId,
+        font,
+        boldFont
+      );
+    }
+  }
+  
+  return coverPage;
+}
+
 /* ---------- entry ---------- */
 export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
   try {
@@ -123,6 +255,11 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
 
     const cutW   = +await pd('cutWidthInches')  || 0;
     const cutH   = +await pd('cutHeightInches') || 0;
+
+    // Slug info keys
+    const orderId = await pd('orderId') || '';
+    const lineId = await pd('lineId') || '';
+    const pagesStr = await pd('pages') || '';
 
     // Bleed: if not explicitly provided, default to cut + 0.25"
     const bleedWRaw = +await pd('bleedWidthInches');
@@ -226,6 +363,11 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     const sheetSize: [number, number] = [sheetWpt, sheetHpt];
     let perSheet = cols * rows;
 
+    // Prepare fonts and slug text once
+    const font = await outDoc.embedFont(StandardFonts.Helvetica);
+    const boldFont = await outDoc.embedFont(StandardFonts.HelveticaBold);
+    const slugText = `OrderID: ${orderId} | ItemID: ${lineId} | No. Up: ${perSheet} | Pages: ${pagesStr} | CutHeight: ${cutH} | CutWidth: ${cutW}`;
+
     // Determine if artwork has bleed
     const hasBleed = (bleedWpt > cutWpt) || (bleedHpt > cutHpt);
 
@@ -245,10 +387,16 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     const placeW = hasBleed ? bleedWpt : cutWpt;
     const placeH = hasBleed ? bleedHpt : cutHpt;
 
+    // Store the first imposed page for the cover sheet
+    let firstImposedPageBytes: Uint8Array | null = null;
+    let tempDoc: any = null;
+
     // Handle repeat imposition (one sheet per source page)
     if (useRepeat) {
       for (let srcPageIdx = 0; srcPageIdx < placementEmbeds.length; srcPageIdx++) {
         const page = outDoc.addPage(sheetSize);
+        // Draw slug underneath everything
+        drawSlugLine(page, slugText, sheetWpt, sheetHpt, font);
         const ep = placementEmbeds[srcPageIdx];
 
         // First, draw all crop marks
@@ -277,6 +425,14 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
             page.drawPage(ep, { x, y, rotate: degrees(0) });
           }
         }
+
+        // Capture the first imposed page for the cover sheet
+        if (srcPageIdx === 0 && !firstImposedPageBytes) {
+          tempDoc = await PDFDocument.create();
+          const [copiedPage] = await tempDoc.copyPages(outDoc, [0]);
+          tempDoc.addPage(copiedPage);
+          firstImposedPageBytes = await tempDoc.save();
+        }
       }
     } else if (impositionCutAndStack) {
       return job.fail('Cut and stack imposition not yet implemented');
@@ -285,8 +441,11 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     } else {
       // Original logic for multi-page repeating across sheets
       let placed = 0;
+      let pageIndex = 0;
       while (placed < placementEmbeds.length || placed % perSheet !== 0) {
         const page = outDoc.addPage(sheetSize);
+        // Draw slug underneath everything
+        drawSlugLine(page, slugText, sheetWpt, sheetHpt, font);
 
         // First, draw all crop marks
         for (let r = 0; r < rows; r++) {
@@ -319,11 +478,59 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
             if (placed >= placementEmbeds.length && placed % perSheet === 0) break;
           }
         }
+
+        // Capture the first imposed page for the cover sheet
+        if (pageIndex === 0 && !firstImposedPageBytes) {
+          tempDoc = await PDFDocument.create();
+          const [copiedPage] = await tempDoc.copyPages(outDoc, [pageIndex]);
+          tempDoc.addPage(copiedPage);
+          firstImposedPageBytes = await tempDoc.save();
+        }
+        pageIndex++;
       }
     }
 
+    // Create and insert cover sheet at the beginning
+    if (firstImposedPageBytes) {
+      // Create a new document for the final output with cover sheet
+      const finalDoc = await PDFDocument.create();
+      
+      // Create the cover sheet
+      await createCoverSheet(
+        finalDoc,
+        firstImposedPageBytes,
+        sheetWpt,
+        sheetHpt,
+        cols,
+        rows,
+        offX,
+        offY,
+        cutWpt,
+        cutHpt,
+        gapHpt,
+        gapVpt,
+        orderId,
+        lineId,
+        font,
+        boldFont,
+        slugText
+      );
+      
+      // Copy all pages from the original output document
+      const outDocBytes = await outDoc.save();
+      const outDocForCopy = await PDFDocument.load(outDocBytes);
+      const pagesToCopy = outDocForCopy.getPageCount();
+      const copiedPages = await finalDoc.copyPages(outDocForCopy, Array.from({length: pagesToCopy}, (_, i) => i));
+      copiedPages.forEach(page => finalDoc.addPage(page));
+      
+      // Save the final document with cover sheet
+      await fs.writeFile(rwPath, await finalDoc.save());
+    } else {
+      // Fallback: save without cover sheet if something went wrong
+      await fs.writeFile(rwPath, await outDoc.save());
+    }
+
     // write back & route
-    await fs.writeFile(rwPath, await outDoc.save());
     if ((job as any).sendToSingle) await (job as any).sendToSingle();
     else job.sendTo(rwPath, 0);
   } catch (e:any) {
