@@ -7,13 +7,28 @@ import * as http from 'http';
 /* ---------- helpers ---------- */
 const PT = 72, pt = (inch: number) => inch * PT;
 
+type Layout = {
+  sheetWIn: number;
+  sheetHIn: number;
+  cols: number;
+  rows: number;
+  cellWpt: number;
+  cellHpt: number;
+  gapHpt: number;
+  gapVpt: number;
+  offX: number;
+  offY: number;
+  waste: number; // empty cells
+  orientation: 'portrait' | 'landscape';
+};
+
 function gridFit(availW: number, availH: number, cellW: number, cellH: number, gapH: number, gapV: number) {
   const colsMax = Math.max(1, Math.floor((availW + gapH) / (cellW + gapH)));
   const rowsMax = Math.max(1, Math.floor((availH + gapV) / (cellH + gapV)));
   return { colsMax, rowsMax };
 }
 
-/** Draw crop marks for an individual placement (same style as earlier script) */
+/** Draw crop marks for an individual placement */
 function drawIndividualCrops(
   page: any,
   centerX: number,
@@ -62,7 +77,7 @@ function drawIndividualCrops(
   page.drawLine({ start:{x:xR + off, y:yB}, end:{x:xR + off + rightLen, y:yB}, thickness: strokePt, color: k });
 }
 
-/** Draw a lavender overlay box with ID information */
+/** Draw a lavender overlay box with ID information (for cover) */
 function drawLavenderOverlay(
   page: any,
   centerX: number,
@@ -92,20 +107,13 @@ function drawLavenderOverlay(
   const white = rgb(1, 1, 1);
   const lineHeight = 14;
 
-  // CHANGED: label + ensure we're using the item's orderId
   const idText = `OrderID: ${orderId}`;
   const idSize = 12;
   const idWidth = boldFont.widthOfTextAtSize(idText, idSize);
   const idX = centerX - idWidth / 2;
   const idY = centerY + lineHeight / 2;
 
-  page.drawText(idText, {
-    x: idX,
-    y: idY,
-    size: idSize,
-    font: boldFont,
-    color: white
-  });
+  page.drawText(idText, { x: idX, y: idY, size: idSize, font: boldFont, color: white });
 
   const itemText = `OrderItemID: ${itemId}`;
   const itemSize = 12;
@@ -113,13 +121,7 @@ function drawLavenderOverlay(
   const itemX = centerX - itemWidth / 2;
   const itemY = centerY - lineHeight / 2 - 4;
 
-  page.drawText(itemText, {
-    x: itemX,
-    y: itemY,
-    size: itemSize,
-    font: font,
-    color: white
-  });
+  page.drawText(itemText, { x: itemX, y: itemY, size: itemSize, font, color: white });
 }
 
 /** HTTP GET a PDF into a Uint8Array */
@@ -138,86 +140,73 @@ function httpGetBytes(url: string): Promise<Uint8Array> {
   });
 }
 
-/**
- * Build a reusable embedded page that carries its own CropBox.
- * MediaBox equals bleed (or cut if no bleed); CropBox = centered cut rectangle.
- */
-async function buildPlacementXObject(
-  outDoc: any,
-  srcBytes: Uint8Array,
-  pageIndex: number,
-  cutWpt: number,
-  cutHpt: number,
-  bleedWpt: number,
-  bleedHpt: number,
-  hasBleed: boolean
-) {
-  const wrapper = await PDFDocument.create();
-  const [srcEp] = await wrapper.embedPdf(srcBytes, [pageIndex]);
+/** PLAN LAYOUT: uses fixed outer sheet margins of 0.125" and inter-cell gaps from payload; fits by CUT size */
+function planLayout(
+  sheetWIn: number,
+  sheetHIn: number,
+  orderItems: any[]
+): Layout | null {
+  const required = orderItems.length;
 
-  const pageW = hasBleed ? bleedWpt : cutWpt;
-  const pageH = hasBleed ? bleedHpt : cutHpt;
-  const placementPage = wrapper.addPage([pageW, pageH]);
+  const maxCutWIn = Math.max(...orderItems.map(it => +it.cutWidthInches || 0));
+  const maxCutHIn = Math.max(...orderItems.map(it => +it.cutHeightInches || 0));
+  if (!maxCutWIn || !maxCutHIn) return null;
 
-  const artX = (pageW - srcEp.width) / 2;
-  const artY = (pageH - srcEp.height) / 2;
-  placementPage.drawPage(srcEp, { x: artX, y: artY, rotate: degrees(0) });
+  // Inter-cell gaps come from payload
+  const gapHIn = Math.max(...orderItems.map(it => +it.impositionMarginHorizontal || 0), 0);
+  const gapVIn = Math.max(...orderItems.map(it => +it.impositionMarginVertical || 0), 0);
 
-  const cropX = hasBleed ? (bleedWpt - cutWpt) / 2 : 0;
-  const cropY = hasBleed ? (bleedHpt - cutHpt) / 2 : 0;
-  placementPage.setCropBox(cropX, cropY, cutWpt, cutHpt);
+  // Fixed outer margins (sheet edges) = 0.125"
+  const outerMarginHIn = 0.125;
+  const outerMarginVIn = 0.125;
 
-  const wrapperBytes = await wrapper.save();
-  const [embeddedPlacement] = await outDoc.embedPdf(wrapperBytes, [0]);
-  return embeddedPlacement;
-}
+  const availWIn = sheetWIn - 2 * outerMarginHIn;
+  const availHIn = sheetHIn - 2 * outerMarginVIn;
 
-/** Create a cover sheet page that duplicates the first imposed page and adds lavender overlays */
-async function createCoverSheet(
-  outDoc: any,
-  firstPageBytes: Uint8Array,
-  sheetWpt: number,
-  sheetHpt: number,
-  placements: any[],
-  orderItems: any[],
-  offX: number,
-  offY: number,
-  cellWpt: number,
-  cellHpt: number,
-  gapHpt: number,
-  gapVpt: number,
-  // CHANGED: removed global orderId param; we’ll use per-item orderId instead
-  font: any,
-  boldFont: any
-) {
-  const coverPage = outDoc.addPage([sheetWpt, sheetHpt]);
+  const { colsMax, rowsMax } = gridFit(availWIn, availHIn, maxCutWIn, maxCutHIn, gapHIn, gapVIn);
+  const maxPlacements = colsMax * rowsMax;
+  if (maxPlacements < required) return null;
 
-  const [bgPage] = await outDoc.embedPdf(firstPageBytes, [0]);
-  coverPage.drawPage(bgPage, { x: 0, y: 0 });
-
-  // CHANGED: pull orderId from each item
-  for (const plc of placements) {
-    const it = orderItems[plc.itemIdx];
-    const cutWpt_i = pt(+it.cutWidthInches || 0);
-    const cutHpt_i = pt(+it.cutHeightInches || 0);
-
-    const cellCenterX = offX + plc.c * (cellWpt + gapHpt) + cellWpt / 2;
-    const cellCenterY = offY + plc.r * (cellHpt + gapVpt) + cellHpt / 2;
-
-    drawLavenderOverlay(
-      coverPage,
-      cellCenterX,
-      cellCenterY,
-      cutWpt_i,
-      cutHpt_i,
-      String(it.orderId ?? ''),   // CHANGED
-      String(it.id ?? ''),        // unchanged
-      font,
-      boldFont
-    );
+  let cols = Math.min(colsMax, required);
+  let rowsNeeded = Math.ceil(required / cols);
+  while (rowsNeeded > rowsMax && cols > 1) {
+    cols -= 1;
+    rowsNeeded = Math.ceil(required / cols);
   }
+  if (rowsNeeded > rowsMax) return null;
+  const rows = rowsNeeded;
 
-  return coverPage;
+  const cellWpt = pt(maxCutWIn);
+  const cellHpt = pt(maxCutHIn);
+  const gapHpt = pt(gapHIn);
+  const gapVpt = pt(gapVIn);
+
+  const arrWpt = cols * cellWpt + (cols - 1) * gapHpt;
+  const arrHpt = rows * cellHpt + (rows - 1) * gapVpt;
+
+  const sheetWpt = pt(sheetWIn);
+  const sheetHpt = pt(sheetHIn);
+
+  // Center the array inside fixed outer margins
+  const offX = pt(outerMarginHIn) + (sheetWpt - pt(outerMarginHIn) * 2 - arrWpt) / 2;
+  const offY = pt(outerMarginVIn) + (sheetHpt - pt(outerMarginVIn) * 2 - arrHpt) / 2;
+
+  const waste = cols * rows - required;
+
+  return {
+    sheetWIn,
+    sheetHIn,
+    cols,
+    rows,
+    cellWpt,
+    cellHpt,
+    gapHpt,
+    gapVpt,
+    offX,
+    offY,
+    waste,
+    orientation: sheetHIn >= sheetWIn ? 'portrait' : 'landscape'
+  };
 }
 
 /* ---------- entry ---------- */
@@ -261,52 +250,47 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     const orderItems: any[] = payload?.orderItems || [];
     if (!orderItems.length) return job.fail('No orderItems in payload');
 
-    // CHANGED: remove broken top-level orderId read
-    // const orderId = payload.orderId || '';  // <-- removed
-
-    // Fixed press sheet size (inches)
-    const sheetWIn = 13;
-    const sheetHIn = 19;
-
-    const sheetWpt = pt(sheetWIn);
-    const sheetHpt = pt(sheetHIn);
-
+    // ---- Diagnostics logging (requested) ----
     const maxCutWIn = Math.max(...orderItems.map(it => +it.cutWidthInches || 0));
     const maxCutHIn = Math.max(...orderItems.map(it => +it.cutHeightInches || 0));
-    if (!maxCutWIn || !maxCutHIn) return job.fail('Invalid cut sizes in payload');
-
+    const maxBleedWIn = Math.max(...orderItems.map(it => (+it.bleedWidthInches || +it.cutWidthInches || 0)));
+    const maxBleedHIn = Math.max(...orderItems.map(it => (+it.bleedHeightInches || +it.cutHeightInches || 0)));
     const gapHIn = Math.max(...orderItems.map(it => +it.impositionMarginHorizontal || 0), 0);
     const gapVIn = Math.max(...orderItems.map(it => +it.impositionMarginVertical || 0), 0);
+    await job.log(LogLevel.Info, 
+      `Sheet ${orderItems[0]?.impositionWidth || 19}x${orderItems[0]?.impositionHeight || 13}; ` +
+      `Cut ${maxCutWIn}x${maxCutHIn}; Bleed ${maxBleedWIn}x${maxBleedHIn}; ` +
+      `Gaps H=${gapHIn} V=${gapVIn}; Items=${orderItems.length}`
+    );
+    await job.log(LogLevel.Info, `Outer sheet margins set to 0.125" (fixed).`);
 
-    const gapHpt = pt(gapHIn);
-    const gapVpt = pt(gapVIn);
+    // Sheet size from payload if present, else default 13x19
+    const baseWIn = +(orderItems[0]?.impositionWidth || 19);
+    const baseHIn = +(orderItems[0]?.impositionHeight || 13);
 
-    const availWIn = sheetWIn - 2 * gapHIn;
-    const availHIn = sheetHIn - 2 * gapVIn;
+    // Try portrait (baseW x baseH) and landscape (swapped) and pick the best that fits
+    const portrait = planLayout(baseWIn, baseHIn, orderItems);
+    const landscape = planLayout(baseHIn, baseWIn, orderItems);
 
-    const { colsMax, rowsMax } = gridFit(availWIn, availHIn, maxCutWIn, maxCutHIn, gapHIn, gapVIn);
-    if (colsMax < 1 || rowsMax < 1) return job.fail('Items cannot fit on 13x19 with current margins');
-
-    let cols = Math.min(colsMax, orderItems.length);
-    let rowsNeeded = Math.ceil(orderItems.length / cols);
-    while (rowsNeeded > rowsMax && cols > 1) {
-      cols -= 1;
-      rowsNeeded = Math.ceil(orderItems.length / cols);
+    let layout: Layout | null = null;
+    if (portrait && !landscape) layout = portrait;
+    else if (!portrait && landscape) layout = landscape;
+    else if (portrait && landscape) {
+      // Prefer fewer empty cells; tie-break on more columns (wider across)
+      if (portrait.waste !== landscape.waste) layout = portrait.waste < landscape.waste ? portrait : landscape;
+      else layout = landscape.cols > portrait.cols ? landscape : portrait;
     }
-    if (rowsNeeded > rowsMax) return job.fail(`Not enough space: need ${rowsNeeded} rows but only ${rowsMax} fit.`);
-    const rows = rowsNeeded;
 
-    const cellWpt = pt(maxCutWIn);
-    const cellHpt = pt(maxCutHIn);
+    if (!layout) return job.fail('Items cannot fit on the specified sheet in either orientation with current gaps and fixed 0.125" outer margins');
 
-    const arrWpt = cols * cellWpt + (cols - 1) * gapHpt;
-    const arrHpt = rows * cellHpt + (rows - 1) * gapVpt;
+    await job.log(LogLevel.Info, `Impose ${layout.cols}x${layout.rows} on ${layout.sheetWIn}x${layout.sheetHIn} (${layout.orientation}). Empty cells: ${layout.waste}`);
 
-    const offX = pt(gapHIn) + (sheetWpt - pt(gapHIn) * 2 - arrWpt) / 2;
-    const offY = pt(gapVIn) + (sheetHpt - pt(gapVIn) * 2 - arrHpt) / 2;
+    const sheetWpt = pt(layout.sheetWIn);
+    const sheetHpt = pt(layout.sheetHIn);
 
     const baseUrl = 'http://10.1.0.79/api/switch/GetLocalArtwork/';
 
+    // Load item assets (bytes + pageCount)
     const itemAssets = await Promise.all(orderItems.map(async (it) => {
       const url = `${baseUrl}${it.id}?pw=51ee6f3a3da5f642470202617cbcbd23`;
       let bytes: Uint8Array;
@@ -333,67 +317,57 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     const font = await outDoc.embedFont(StandardFonts.Helvetica);
     const boldFont = await outDoc.embedFont(StandardFonts.HelveticaBold);
 
-    const embedCache: Map<number, Map<number, any>> = new Map();
+    // --- BATCH EMBED PER ITEM: one call per item for all pages
+    const perItemEmbeddedPages: Map<number, any[]> = new Map(); // itemId -> [embedded pages]
 
-    async function getEmbeddedFor(itAsset: any, pageIndex: number) {
+    async function ensureEmbeddedPagesForItem(itAsset: any) {
       const itId = itAsset.it.id as number;
-      if (!embedCache.has(itId)) embedCache.set(itId, new Map());
-      const m = embedCache.get(itId)!;
-      if (m.has(pageIndex)) return m.get(pageIndex);
+      if (perItemEmbeddedPages.has(itId)) return;
 
-      const cutWpt_i = pt(+itAsset.it.cutWidthInches || 0);
-      const cutHpt_i = pt(+itAsset.it.cutHeightInches || 0);
-      const bleedWpt_i = pt((+itAsset.it.bleedWidthInches || 0) || (+itAsset.it.cutWidthInches || 0));
-      const bleedHpt_i = pt((+itAsset.it.bleedHeightInches || 0) || (+itAsset.it.cutHeightInches || 0));
-      const hasBleed_i = bleedWpt_i > cutWpt_i || bleedHpt_i > cutHpt_i;
-
-      const embedded = await buildPlacementXObject(
-        outDoc,
-        itAsset.bytes,
-        Math.min(pageIndex, itAsset.pageCount - 1),
-        cutWpt_i,
-        cutHpt_i,
-        bleedWpt_i,
-        bleedHpt_i,
-        hasBleed_i
-      );
-      m.set(pageIndex, embedded);
-      return embedded;
+      const idxs = Array.from({ length: itAsset.pageCount }, (_, i) => i);
+      // Single embedPdf call with the full page index array
+      const embedded = await outDoc.embedPdf(itAsset.bytes, idxs);
+      perItemEmbeddedPages.set(itId, embedded);
     }
 
+    // placements in row-major order
     const placements: any[] = [];
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        const idx = r * cols + c;
+    for (let r = 0; r < layout.rows; r++) {
+      for (let c = 0; c < layout.cols; c++) {
+        const idx = r * layout.cols + c;
         if (idx < orderItems.length) placements.push({ r, c, itemIdx: idx });
       }
     }
 
-    let firstPageBytes: Uint8Array | null = null;
-
+    // Build imposed pages
     for (let p = 0; p < maxPages; p++) {
       const page = outDoc.addPage([sheetWpt, sheetHpt]);
 
+      // crop marks pass
       for (const plc of placements) {
         const it = orderItems[plc.itemIdx];
         const cutWpt_i = pt(+it.cutWidthInches || 0);
         const cutHpt_i = pt(+it.cutHeightInches || 0);
 
-        const cellCenterX = offX + plc.c * (cellWpt + gapHpt) + cellWpt / 2;
-        const cellCenterY = offY + plc.r * (cellHpt + gapVpt) + cellHpt / 2;
+        const cellCenterX = layout.offX + plc.c * (layout.cellWpt + layout.gapHpt) + layout.cellWpt / 2;
+        const cellCenterY = layout.offY + plc.r * (layout.cellHpt + layout.gapVpt) + layout.cellHpt / 2;
 
         const isLeftEdge = plc.c === 0;
-        const isRightEdge = plc.c === cols - 1;
+        const isRightEdge = plc.c === layout.cols - 1;
         const isBottomEdge = plc.r === 0;
-        const isTopEdge = plc.r === rows - 1;
+        const isTopEdge = plc.r === layout.rows - 1;
 
         drawIndividualCrops(page, cellCenterX, cellCenterY, cutWpt_i, cutHpt_i,
-          0.0625, 0.125, 0.5, isLeftEdge, isRightEdge, isBottomEdge, isTopEdge, gapHpt, gapVpt);
+          0.0625, 0.125, 0.5, isLeftEdge, isRightEdge, isBottomEdge, isTopEdge, layout.gapHpt, layout.gapVpt);
       }
 
+      // artwork pass
       for (const plc of placements) {
         const asset = itemAssets[plc.itemIdx];
         if (p >= asset.pageCount) continue;
+
+        await ensureEmbeddedPagesForItem(asset);
+        const embeddedPages = perItemEmbeddedPages.get(asset.it.id as number)!;
 
         const it = asset.it;
         const cutWpt_i = pt(+it.cutWidthInches || 0);
@@ -404,65 +378,53 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
         const placeW = hasBleed_i ? bleedWpt_i : cutWpt_i;
         const placeH = hasBleed_i ? bleedHpt_i : cutHpt_i;
 
-        const ep = await getEmbeddedFor(asset, p);
+        const ep = embeddedPages[Math.min(p, embeddedPages.length - 1)];
 
-        const cellCenterX = offX + plc.c * (cellWpt + gapHpt) + cellWpt / 2;
-        const cellCenterY = offY + plc.r * (cellHpt + gapVpt) + cellHpt / 2;
+        const cellCenterX = layout.offX + plc.c * (layout.cellWpt + layout.gapHpt) + layout.cellWpt / 2;
+        const cellCenterY = layout.offY + plc.r * (layout.cellHpt + layout.gapVpt) + layout.cellHpt / 2;
         const x = cellCenterX - placeW / 2;
         const y = cellCenterY - placeH / 2;
 
-        page.drawPage(ep, { x, y, rotate: degrees(0) });
-      }
-
-      if (p === 0 && !firstPageBytes) {
-        const tempDoc = await PDFDocument.create();
-        const [copiedPage] = await tempDoc.copyPages(outDoc, [0]);
-        tempDoc.addPage(copiedPage);
-        firstPageBytes = await tempDoc.save();
+        page.drawPage(ep, { x, y, width: placeW, height: placeH, rotate: degrees(0) });
       }
     }
 
-    if (firstPageBytes) {
-      const finalDoc = await PDFDocument.create();
+    // Create cover: duplicate first imposed page at front and overlay lavender boxes
+    if (outDoc.getPageCount() > 0) {
+      const [dup] = await outDoc.copyPages(outDoc, [0]); // duplicate first page
+      outDoc.insertPage(0, dup);
+      const cover = outDoc.getPage(0);
 
-      // CHANGED: call createCoverSheet without a global orderId
-      await createCoverSheet(
-        finalDoc,
-        firstPageBytes,
-        sheetWpt,
-        sheetHpt,
-        placements,
-        orderItems,
-        offX,
-        offY,
-        cellWpt,
-        cellHpt,
-        gapHpt,
-        gapVpt,
-        font,
-        boldFont
-      );
+      for (const plc of placements) {
+        const it = orderItems[plc.itemIdx];
+        const cutWpt_i = pt(+it.cutWidthInches || 0);
+        const cutHpt_i = pt(+it.cutHeightInches || 0);
 
-      const outDocBytes = await outDoc.save();
-      const outDocForCopy = await PDFDocument.load(outDocBytes);
-      const pagesToCopy = outDocForCopy.getPageCount();
-      const copiedPages = await finalDoc.copyPages(outDocForCopy, Array.from({length: pagesToCopy}, (_, i) => i));
-      copiedPages.forEach(page => finalDoc.addPage(page));
+        const cellCenterX = layout.offX + plc.c * (layout.cellWpt + layout.gapHpt) + layout.cellWpt / 2;
+        const cellCenterY = layout.offY + plc.r * (layout.cellHpt + layout.gapVpt) + layout.cellHpt / 2;
 
-      const rwPath = await job.get(AccessLevel.ReadWrite);
-      await fs.writeFile(rwPath, await finalDoc.save());
-
-      const base = 'Batch-' + payload.batchId + '.pdf';
-      if ((job as any).sendToSingle) await (job as any).sendToSingle(base);
-      else job.sendTo(rwPath, 0, base);
-    } else {
-      const rwPath = await job.get(AccessLevel.ReadWrite);
-      await fs.writeFile(rwPath, await outDoc.save());
-
-      const base = 'Batch-' + payload.batchId + '.pdf';
-      if ((job as any).sendToSingle) await (job as any).sendToSingle(base);
-      else job.sendTo(rwPath, 0, base);
+        drawLavenderOverlay(
+          cover,
+          cellCenterX,
+          cellCenterY,
+          cutWpt_i,
+          cutHpt_i,
+          String(it.orderId ?? ''),
+          String(it.id ?? ''),
+          font,
+          boldFont
+        );
+      }
     }
+
+    // Save compactly and send
+    const rwPath = await job.get(AccessLevel.ReadWrite);
+    const pdfBytes = await outDoc.save({ useObjectStreams: true });
+    await fs.writeFile(rwPath, pdfBytes);
+
+    const base = 'Batch-' + payload.batchId + '.pdf';
+    if ((job as any).sendToSingle) await (job as any).sendToSingle(base);
+    else job.sendTo(rwPath, 0, base);
   } catch (e:any) {
     await job.fail(`Batching impose error: ${e.message || e}`);
   }

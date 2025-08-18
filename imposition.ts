@@ -32,8 +32,8 @@ function drawIndividualCrops(
 ) {
   const off = pt(gapIn);
   const perimeterLen = pt(lenIn);
-  const maxInteriorLenH = (gapHorizontal - off * 2) * 0.4;
-  const maxInteriorLenV = (gapVertical - off * 2) * 0.4;
+  const maxInteriorLenH = Math.max(0, (gapHorizontal - off * 2) * 0.4);
+  const maxInteriorLenV = Math.max(0, (gapVertical - off * 2) * 0.4);
   const interiorLenH = Math.min(pt(0.03125), maxInteriorLenH);
   const interiorLenV = Math.min(pt(0.03125), maxInteriorLenV);
   const k = rgb(0,0,0);
@@ -57,9 +57,7 @@ function drawIndividualCrops(
   page.drawLine({ start:{x:xR + off, y:yB}, end:{x:xR + off + rightLen, y:yB}, thickness: strokePt, color: k });
 }
 
-/** Draw a small slug line near a long edge (0.25\" in) and center it along that edge.
- *  Draw this BEFORE crops/art so it sits underneath artwork.
- */
+/** Draw a small slug line near a long edge (0.25" in) and center it along that edge. */
 function drawSlugLine(page: any, text: string, sheetW: number, sheetH: number, font: any, marginIn: number = 0.25) {
   const m = pt(marginIn);
   let size = 7; // default; will downsize if needed
@@ -102,9 +100,8 @@ function drawTealOverlay(
   const halfH = cutH / 2;
   const xL = centerX - halfW;
   const yB = centerY - halfH;
-  
-  // Draw teal rectangle with 90% opacity (0.1 transparency)
-  const teal = rgb(0, 0.5, 0.5); // Teal color
+
+  const teal = rgb(0, 0.5, 0.5);
   page.drawRectangle({
     x: xL,
     y: yB,
@@ -113,135 +110,23 @@ function drawTealOverlay(
     color: teal,
     opacity: 0.9
   });
-  
-  // Draw text in white
+
   const white = rgb(1, 1, 1);
   const lineHeight = 14;
-  
-  // ID text
+
   const idText = `OrderID: ${orderId}`;
   const idSize = 12;
   const idWidth = boldFont.widthOfTextAtSize(idText, idSize);
   const idX = centerX - idWidth / 2;
   const idY = centerY + lineHeight / 2;
-  
-  page.drawText(idText, {
-    x: idX,
-    y: idY,
-    size: idSize,
-    font: boldFont,
-    color: white
-  });
-  
-  // OrderItemID text
+  page.drawText(idText, { x: idX, y: idY, size: idSize, font: boldFont, color: white });
+
   const itemText = `OrderItemID: ${lineId}`;
   const itemSize = 12;
   const itemWidth = font.widthOfTextAtSize(itemText, itemSize);
   const itemX = centerX - itemWidth / 2;
   const itemY = centerY - lineHeight / 2 - 4;
-  
-  page.drawText(itemText, {
-    x: itemX,
-    y: itemY,
-    size: itemSize,
-    font: font,
-    color: white
-  });
-}
-
-/**
- * Build a reusable embedded page that carries its own CropBox.
- * We wrap the source page inside a small one-page PDF whose MediaBox equals the bleed size
- * (or the cut size if no bleed). Then we set that wrapper page's CropBox to the cut rectangle
- * centered on the page. We embed this wrapper once per source page and reuse it for every placement.
- */
-async function buildPlacementXObject(
-  outDoc: any,
-  srcBytes: Uint8Array,
-  pageIndex: number,
-  cutWpt: number,
-  cutHpt: number,
-  bleedWpt: number,
-  bleedHpt: number,
-  hasBleed: boolean
-) {
-  // Wrapper doc holds a single page with the desired boxes
-  const wrapper = await PDFDocument.create();
-  const [srcEp] = await wrapper.embedPdf(srcBytes, [pageIndex]);
-
-  const pageW = hasBleed ? bleedWpt : cutWpt;
-  const pageH = hasBleed ? bleedHpt : cutHpt;
-  const placementPage = wrapper.addPage([pageW, pageH]);
-
-  // Center original artwork on wrapper page (no scaling, matching the original code's behavior)
-  const artX = (pageW - srcEp.width) / 2;
-  const artY = (pageH - srcEp.height) / 2;
-  placementPage.drawPage(srcEp, { x: artX, y: artY, rotate: degrees(0) });
-
-  // Define CropBox: centered cut rectangle inside the bleed-sized page (or full page if no bleed)
-  const cropX = hasBleed ? (bleedWpt - cutWpt) / 2 : 0;
-  const cropY = hasBleed ? (bleedHpt - cutHpt) / 2 : 0;
-  const cropW = cutWpt;
-  const cropH = cutHpt;
-  placementPage.setCropBox(cropX, cropY, cropW, cropH);
-
-  // Embed wrapper's single page into the output doc and return that embedded page object
-  const wrapperBytes = await wrapper.save();
-  const [embeddedPlacement] = await outDoc.embedPdf(wrapperBytes, [0]);
-  return embeddedPlacement;
-}
-
-/** Create a cover sheet page that duplicates the first imposed page and adds teal overlays */
-async function createCoverSheet(
-  outDoc: any,
-  firstPageBytes: Uint8Array,
-  sheetWpt: number,
-  sheetHpt: number,
-  cols: number,
-  rows: number,
-  offX: number,
-  offY: number,
-  cutWpt: number,
-  cutHpt: number,
-  gapHpt: number,
-  gapVpt: number,
-  orderId: string,
-  lineId: string,
-  font: any,
-  boldFont: any,
-  slugText: string
-) {
-  // Create a new page for the cover sheet
-  const coverPage = outDoc.addPage([sheetWpt, sheetHpt]);
-  
-  // Draw slug line
-  // drawSlugLine(coverPage, slugText, sheetWpt, sheetHpt, font);
-  
-  // Embed the first imposed page as background
-  const [bgPage] = await outDoc.embedPdf(firstPageBytes, [0]);
-  coverPage.drawPage(bgPage, { x: 0, y: 0 });
-  
-  // Draw teal overlays on each position
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      const cellCenterX = offX + c * (cutWpt + gapHpt) + cutWpt / 2;
-      const cellCenterY = offY + r * (cutHpt + gapVpt) + cutHpt / 2;
-      
-      drawTealOverlay(
-        coverPage,
-        cellCenterX,
-        cellCenterY,
-        cutWpt,
-        cutHpt,
-        orderId,
-        lineId,
-        font,
-        boldFont
-      );
-    }
-  }
-  
-  return coverPage;
+  page.drawText(itemText, { x: itemX, y: itemY, size: itemSize, font, color: white });
 }
 
 /* ---------- entry ---------- */
@@ -348,20 +233,19 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     const offX = effectiveMarginLeft + (sheetWpt - effectiveMarginLeft - effectiveMarginRight - arrWpt) / 2;
     const offY = effectiveMarginBottom + (sheetHpt - effectiveMarginBottom - effectiveMarginTop - arrHpt) / 2;
 
-    // --- open job, create imposed doc (embed pages EXPLICITLY) ---
+    // --- open job, create imposed doc ---
     const rwPath = await job.get(AccessLevel.ReadWrite);
     const src = await fs.readFile(rwPath);
 
     const outDoc = await PDFDocument.create();
 
-    // Load original to count pages (we will NOT embed these directly). We'll build cropped wrappers instead.
+    // Load original to count pages and to build embed list
     const srcDoc = await PDFDocument.load(src);
     const pageCount = srcDoc.getPageCount();
-
     if (!pageCount) return job.fail('Source PDF has 0 pages');
 
     const sheetSize: [number, number] = [sheetWpt, sheetHpt];
-    let perSheet = cols * rows;
+    const perSheet = cols * rows;
 
     // Prepare fonts and slug text once
     const font = await outDoc.embedFont(StandardFonts.Helvetica);
@@ -373,65 +257,48 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
 
     await job.log(
       LogLevel.Info,
-      `Artwork: cut=${cutW}x${cutH}", bleed=${bleedW}x${bleedH}", hasBleed=${hasBleed}`
+      `Artwork: cut=${cutW}x${cutH}", bleed=${bleedW}x${bleedH}", hasBleed=${hasBleed}; cols=${cols}, rows=${rows}`
     );
 
-    // Build ONE embedded placement page (with CropBox) per source page, then reuse it for all placements
-    const placementEmbeds: any[] = [];
-    for (let i = 0; i < pageCount; i++) {
-      const embed = await buildPlacementXObject(outDoc, src, i, cutWpt, cutHpt, bleedWpt, bleedHpt, hasBleed);
-      placementEmbeds.push(embed);
-    }
+    // --- BATCH EMBED ALL SOURCE PAGES ONCE (major size reduction) ---
+    const pageIdxs = Array.from({ length: pageCount }, (_, i) => i);
+    const embeddedPages = await outDoc.embedPdf(src, pageIdxs);
 
-    // Size we draw per placement equals the wrapper page size
+    // Size we draw per placement equals bleed (if present) otherwise cut
     const placeW = hasBleed ? bleedWpt : cutWpt;
     const placeH = hasBleed ? bleedHpt : cutHpt;
 
-    // Store the first imposed page for the cover sheet
-    let firstImposedPageBytes: Uint8Array | null = null;
-    let tempDoc: any = null;
-
-    // Handle repeat imposition (one sheet per source page)
+    // ---------- Build imposed pages ----------
     if (useRepeat) {
-      for (let srcPageIdx = 0; srcPageIdx < placementEmbeds.length; srcPageIdx++) {
+      // One sheet per source page, repeating the same page in every cell
+      for (let srcPageIdx = 0; srcPageIdx < embeddedPages.length; srcPageIdx++) {
         const page = outDoc.addPage(sheetSize);
-        // Draw slug underneath everything
         drawSlugLine(page, slugText, sheetWpt, sheetHpt, font);
-        const ep = placementEmbeds[srcPageIdx];
+        const ep = embeddedPages[srcPageIdx];
 
-        // First, draw all crop marks
+        // Draw all crop marks
         for (let r = 0; r < rows; r++) {
           for (let c = 0; c < cols; c++) {
             const cellCenterX = offX + c * (cutWpt + gapHpt) + cutWpt / 2;
             const cellCenterY = offY + r * (cutHpt + gapVpt) + cutHpt / 2;
-
             const isLeftEdge = c === 0;
             const isRightEdge = c === cols - 1;
             const isBottomEdge = r === 0;
             const isTopEdge = r === rows - 1;
-
             drawIndividualCrops(page, cellCenterX, cellCenterY, cutWpt, cutHpt,
               0.0625, 0.125, 0.5, isLeftEdge, isRightEdge, isBottomEdge, isTopEdge, gapHpt, gapVpt);
           }
         }
 
-        // Place the same (cropped) page multiple times per sheet
+        // Place page into every cell
         for (let r = 0; r < rows; r++) {
           for (let c = 0; c < cols; c++) {
             const cellCenterX = offX + c * (cutWpt + gapHpt) + cutWpt / 2;
             const cellCenterY = offY + r * (cutHpt + gapVpt) + cutHpt / 2;
             const x = cellCenterX - placeW / 2;
             const y = cellCenterY - placeH / 2;
-            page.drawPage(ep, { x, y, rotate: degrees(0) });
+            page.drawPage(ep, { x, y, width: placeW, height: placeH, rotate: degrees(0) });
           }
-        }
-
-        // Capture the first imposed page for the cover sheet
-        if (srcPageIdx === 0 && !firstImposedPageBytes) {
-          tempDoc = await PDFDocument.create();
-          const [copiedPage] = await tempDoc.copyPages(outDoc, [0]);
-          tempDoc.addPage(copiedPage);
-          firstImposedPageBytes = await tempDoc.save();
         }
       }
     } else if (impositionCutAndStack) {
@@ -439,98 +306,71 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     } else if (booklet) {
       return job.fail('Booklet imposition not yet implemented');
     } else {
-      // Original logic for multi-page repeating across sheets
+      // Fill sheets sequentially with successive source pages
       let placed = 0;
-      let pageIndex = 0;
-      while (placed < placementEmbeds.length || placed % perSheet !== 0) {
+      while (placed < embeddedPages.length || (placed % perSheet) !== 0) {
         const page = outDoc.addPage(sheetSize);
-        // Draw slug underneath everything
         drawSlugLine(page, slugText, sheetWpt, sheetHpt, font);
 
-        // First, draw all crop marks
+        // Draw crop marks grid
         for (let r = 0; r < rows; r++) {
           for (let c = 0; c < cols; c++) {
             const cellCenterX = offX + c * (cutWpt + gapHpt) + cutWpt / 2;
             const cellCenterY = offY + r * (cutHpt + gapVpt) + cutHpt / 2;
-
             const isLeftEdge = c === 0;
             const isRightEdge = c === cols - 1;
             const isBottomEdge = r === 0;
             const isTopEdge = r === rows - 1;
-
             drawIndividualCrops(page, cellCenterX, cellCenterY, cutWpt, cutHpt,
               0.0625, 0.125, 0.5, isLeftEdge, isRightEdge, isBottomEdge, isTopEdge, gapHpt, gapVpt);
           }
         }
 
-        placed = placed - (placed % perSheet); // Reset to start of this sheet
+        // Reset to start of this sheet
+        placed = placed - (placed % perSheet);
+
         for (let r = 0; r < rows; r++) {
           for (let c = 0; c < cols; c++) {
-            const ep = placementEmbeds[placed % placementEmbeds.length];
+            const idx = placed % embeddedPages.length;
+            const ep = embeddedPages[idx];
 
             const cellCenterX = offX + c * (cutWpt + gapHpt) + cutWpt / 2;
             const cellCenterY = offY + r * (cutHpt + gapVpt) + cutHpt / 2;
             const x = cellCenterX - placeW / 2;
             const y = cellCenterY - placeH / 2;
-            page.drawPage(ep, { x, y, rotate: degrees(0) });
+
+            page.drawPage(ep, { x, y, width: placeW, height: placeH, rotate: degrees(0) });
 
             placed++;
-            if (placed >= placementEmbeds.length && placed % perSheet === 0) break;
+            if (placed >= embeddedPages.length && (placed % perSheet) === 0) break;
           }
         }
-
-        // Capture the first imposed page for the cover sheet
-        if (pageIndex === 0 && !firstImposedPageBytes) {
-          tempDoc = await PDFDocument.create();
-          const [copiedPage] = await tempDoc.copyPages(outDoc, [pageIndex]);
-          tempDoc.addPage(copiedPage);
-          firstImposedPageBytes = await tempDoc.save();
-        }
-        pageIndex++;
       }
     }
 
-    // Create and insert cover sheet at the beginning
-    if (firstImposedPageBytes) {
-      // Create a new document for the final output with cover sheet
-      const finalDoc = await PDFDocument.create();
-      
-      // Create the cover sheet
-      await createCoverSheet(
-        finalDoc,
-        firstImposedPageBytes,
-        sheetWpt,
-        sheetHpt,
-        cols,
-        rows,
-        offX,
-        offY,
-        cutWpt,
-        cutHpt,
-        gapHpt,
-        gapVpt,
-        orderId,
-        lineId,
-        font,
-        boldFont,
-        slugText
-      );
-      
-      // Copy all pages from the original output document
-      const outDocBytes = await outDoc.save();
-      const outDocForCopy = await PDFDocument.load(outDocBytes);
-      const pagesToCopy = outDocForCopy.getPageCount();
-      const copiedPages = await finalDoc.copyPages(outDocForCopy, Array.from({length: pagesToCopy}, (_, i) => i));
-      copiedPages.forEach(page => finalDoc.addPage(page));
-      
-      // Save the final document with cover sheet
-      await fs.writeFile(rwPath, await finalDoc.save());
-    } else {
-      // Fallback: save without cover sheet if something went wrong
-      await fs.writeFile(rwPath, await outDoc.save());
+    // ---------- Create a cover page by duplicating page 0 and overlaying info ----------
+    if (outDoc.getPageCount() > 0) {
+      const [dup] = await outDoc.copyPages(outDoc, [0]); // duplicate first imposed page
+      outDoc.insertPage(0, dup);
+      const cover = outDoc.getPage(0);
+
+      // Optional: put the slug on the cover too (under overlays)
+      drawSlugLine(cover, slugText, sheetWpt, sheetHpt, font);
+
+      // Draw teal overlays on each position
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          const cellCenterX = offX + c * (cutWpt + gapHpt) + cutWpt / 2;
+          const cellCenterY = offY + r * (cutHpt + gapVpt) + cutHpt / 2;
+          drawTealOverlay(cover, cellCenterX, cellCenterY, cutWpt, cutHpt, orderId, lineId, font, boldFont);
+        }
+      }
     }
 
-    // write back & route
+    // Save compactly and route
+    const pdfBytes = await outDoc.save({ useObjectStreams: true });
+    await fs.writeFile(rwPath, pdfBytes);
+
     if ((job as any).sendToSingle) await (job as any).sendToSingle();
     else job.sendTo(rwPath, 0);
   } catch (e:any) {
