@@ -209,6 +209,88 @@ function planLayout(
   };
 }
 
+/** Create a cover page with artwork, crops, and overlay */
+async function createCoverPage(
+  outDoc: PDFDocument,
+  layout: Layout,
+  orderItems: any[],
+  itemAssets: any[],
+  perItemEmbeddedPages: Map<number, any[]>,
+  placements: any[],
+  pageIndex: number,
+  font: any,
+  boldFont: any
+) {
+  const sheetWpt = pt(layout.sheetWIn);
+  const sheetHpt = pt(layout.sheetHIn);
+  const page = outDoc.addPage([sheetWpt, sheetHpt]);
+
+  // First draw crop marks
+  for (const plc of placements) {
+    const it = orderItems[plc.itemIdx];
+    const cutWpt_i = pt(+it.cutWidthInches || 0);
+    const cutHpt_i = pt(+it.cutHeightInches || 0);
+
+    const cellCenterX = layout.offX + plc.c * (layout.cellWpt + layout.gapHpt) + layout.cellWpt / 2;
+    const cellCenterY = layout.offY + plc.r * (layout.cellHpt + layout.gapVpt) + layout.cellHpt / 2;
+
+    const isLeftEdge = plc.c === 0;
+    const isRightEdge = plc.c === layout.cols - 1;
+    const isBottomEdge = plc.r === 0;
+    const isTopEdge = plc.r === layout.rows - 1;
+
+    drawIndividualCrops(page, cellCenterX, cellCenterY, cutWpt_i, cutHpt_i,
+      0.0625, 0.125, 0.5, isLeftEdge, isRightEdge, isBottomEdge, isTopEdge, layout.gapHpt, layout.gapVpt);
+  }
+
+  // Then draw artwork from the specified page
+  for (const plc of placements) {
+    const asset = itemAssets[plc.itemIdx];
+    if (pageIndex >= asset.pageCount) continue;
+
+    const embeddedPages = perItemEmbeddedPages.get(asset.it.id as number)!;
+    const it = asset.it;
+    const cutWpt_i = pt(+it.cutWidthInches || 0);
+    const cutHpt_i = pt(+it.cutHeightInches || 0);
+    const bleedWpt_i = pt((+it.bleedWidthInches || 0) || (+it.cutWidthInches || 0));
+    const bleedHpt_i = pt((+it.bleedHeightInches || 0) || (+it.cutHeightInches || 0));
+    const hasBleed_i = bleedWpt_i > cutWpt_i || bleedHpt_i > cutHpt_i;
+    const placeW = hasBleed_i ? bleedWpt_i : cutWpt_i;
+    const placeH = hasBleed_i ? bleedHpt_i : cutHpt_i;
+
+    const ep = embeddedPages[Math.min(pageIndex, embeddedPages.length - 1)];
+
+    const cellCenterX = layout.offX + plc.c * (layout.cellWpt + layout.gapHpt) + layout.cellWpt / 2;
+    const cellCenterY = layout.offY + plc.r * (layout.cellHpt + layout.gapVpt) + layout.cellHpt / 2;
+    const x = cellCenterX - placeW / 2;
+    const y = cellCenterY - placeH / 2;
+
+    page.drawPage(ep, { x, y, width: placeW, height: placeH, rotate: degrees(0) });
+  }
+
+  // Finally draw lavender overlays
+  for (const plc of placements) {
+    const it = orderItems[plc.itemIdx];
+    const cutWpt_i = pt(+it.cutWidthInches || 0);
+    const cutHpt_i = pt(+it.cutHeightInches || 0);
+
+    const cellCenterX = layout.offX + plc.c * (layout.cellWpt + layout.gapHpt) + layout.cellWpt / 2;
+    const cellCenterY = layout.offY + plc.r * (layout.cellHpt + layout.gapVpt) + layout.cellHpt / 2;
+
+    drawLavenderOverlay(
+      page,
+      cellCenterX,
+      cellCenterY,
+      cutWpt_i,
+      cutHpt_i,
+      String(it.orderId ?? ''),
+      String(it.id ?? ''),
+      font,
+      boldFont
+    );
+  }
+}
+
 /* ---------- entry ---------- */
 export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
   try {
@@ -257,31 +339,47 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     const maxBleedHIn = Math.max(...orderItems.map(it => (+it.bleedHeightInches || +it.cutHeightInches || 0)));
     const gapHIn = Math.max(...orderItems.map(it => +it.impositionMarginHorizontal || 0), 0);
     const gapVIn = Math.max(...orderItems.map(it => +it.impositionMarginVertical || 0), 0);
+    
+    // Get sheet dimensions from payload
+    const impositionWidth = +(orderItems[0]?.impositionWidth || 19);
+    const impositionHeight = +(orderItems[0]?.impositionHeight || 13);
+    
+    // NEW: Get explicit orientation from payload, or infer from dimensions
+    const requestedOrientation = orderItems[0]?.impositionOrientation?.toLowerCase();
+    let sheetWIn: number;
+    let sheetHIn: number;
+    let actualOrientation: string;
+    
+    if (requestedOrientation === 'portrait') {
+      // Portrait: width < height (use smaller dimension as width)
+      sheetWIn = Math.min(impositionWidth, impositionHeight);
+      sheetHIn = Math.max(impositionWidth, impositionHeight);
+      actualOrientation = 'portrait';
+    } else if (requestedOrientation === 'landscape') {
+      // Landscape: width > height (use larger dimension as width)
+      sheetWIn = Math.max(impositionWidth, impositionHeight);
+      sheetHIn = Math.min(impositionWidth, impositionHeight);
+      actualOrientation = 'landscape';
+    } else {
+      // No explicit orientation - use dimensions as provided
+      sheetWIn = impositionWidth;
+      sheetHIn = impositionHeight;
+      actualOrientation = sheetHIn > sheetWIn ? 'portrait' : 'landscape';
+    }
+    
     await job.log(LogLevel.Info, 
-      `Sheet ${orderItems[0]?.impositionWidth || 19}x${orderItems[0]?.impositionHeight || 13}; ` +
+      `Sheet ${sheetWIn}x${sheetHIn} (${actualOrientation}${requestedOrientation ? ' - explicitly requested' : ' - inferred from dimensions'}); ` +
       `Cut ${maxCutWIn}x${maxCutHIn}; Bleed ${maxBleedWIn}x${maxBleedHIn}; ` +
       `Gaps H=${gapHIn} V=${gapVIn}; Items=${orderItems.length}`
     );
     await job.log(LogLevel.Info, `Outer sheet margins set to 0.125" (fixed).`);
 
-    // Sheet size from payload if present, else default 13x19
-    const baseWIn = +(orderItems[0]?.impositionWidth || 19);
-    const baseHIn = +(orderItems[0]?.impositionHeight || 13);
+    // Use the determined sheet dimensions directly - no orientation testing
+    const layout = planLayout(sheetWIn, sheetHIn, orderItems);
 
-    // Try portrait (baseW x baseH) and landscape (swapped) and pick the best that fits
-    const portrait = planLayout(baseWIn, baseHIn, orderItems);
-    const landscape = planLayout(baseHIn, baseWIn, orderItems);
-
-    let layout: Layout | null = null;
-    if (portrait && !landscape) layout = portrait;
-    else if (!portrait && landscape) layout = landscape;
-    else if (portrait && landscape) {
-      // Prefer fewer empty cells; tie-break on more columns (wider across)
-      if (portrait.waste !== landscape.waste) layout = portrait.waste < landscape.waste ? portrait : landscape;
-      else layout = landscape.cols > portrait.cols ? landscape : portrait;
+    if (!layout) {
+      return job.fail(`Items cannot fit on the specified ${sheetWIn}x${sheetHIn} sheet (${actualOrientation}) with current gaps and fixed 0.125" outer margins`);
     }
-
-    if (!layout) return job.fail('Items cannot fit on the specified sheet in either orientation with current gaps and fixed 0.125" outer margins');
 
     await job.log(LogLevel.Info, `Impose ${layout.cols}x${layout.rows} on ${layout.sheetWIn}x${layout.sheetHIn} (${layout.orientation}). Empty cells: ${layout.waste}`);
 
@@ -330,6 +428,11 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
       perItemEmbeddedPages.set(itId, embedded);
     }
 
+    // Ensure all pages are embedded first
+    for (const asset of itemAssets) {
+      await ensureEmbeddedPagesForItem(asset);
+    }
+
     // placements in row-major order
     const placements: any[] = [];
     for (let r = 0; r < layout.rows; r++) {
@@ -339,7 +442,16 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
       }
     }
 
-    // Build imposed pages
+    // Create first cover page (page 1 artwork)
+    await createCoverPage(outDoc, layout, orderItems, itemAssets, perItemEmbeddedPages, placements, 0, font, boldFont);
+
+    // Create second cover page (page 2 artwork) if there are items with at least 2 pages
+    const hasSecondPage = itemAssets.some(a => a.pageCount >= 2);
+    if (hasSecondPage) {
+      await createCoverPage(outDoc, layout, orderItems, itemAssets, perItemEmbeddedPages, placements, 1, font, boldFont);
+    }
+
+    // Build imposed pages (normal production pages)
     for (let p = 0; p < maxPages; p++) {
       const page = outDoc.addPage([sheetWpt, sheetHpt]);
 
@@ -366,7 +478,6 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
         const asset = itemAssets[plc.itemIdx];
         if (p >= asset.pageCount) continue;
 
-        await ensureEmbeddedPagesForItem(asset);
         const embeddedPages = perItemEmbeddedPages.get(asset.it.id as number)!;
 
         const it = asset.it;
@@ -386,34 +497,6 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
         const y = cellCenterY - placeH / 2;
 
         page.drawPage(ep, { x, y, width: placeW, height: placeH, rotate: degrees(0) });
-      }
-    }
-
-    // Create cover: duplicate first imposed page at front and overlay lavender boxes
-    if (outDoc.getPageCount() > 0) {
-      const [dup] = await outDoc.copyPages(outDoc, [0]); // duplicate first page
-      outDoc.insertPage(0, dup);
-      const cover = outDoc.getPage(0);
-
-      for (const plc of placements) {
-        const it = orderItems[plc.itemIdx];
-        const cutWpt_i = pt(+it.cutWidthInches || 0);
-        const cutHpt_i = pt(+it.cutHeightInches || 0);
-
-        const cellCenterX = layout.offX + plc.c * (layout.cellWpt + layout.gapHpt) + layout.cellWpt / 2;
-        const cellCenterY = layout.offY + plc.r * (layout.cellHpt + layout.gapVpt) + layout.cellHpt / 2;
-
-        drawLavenderOverlay(
-          cover,
-          cellCenterX,
-          cellCenterY,
-          cutWpt_i,
-          cutHpt_i,
-          String(it.orderId ?? ''),
-          String(it.id ?? ''),
-          font,
-          boldFont
-        );
       }
     }
 

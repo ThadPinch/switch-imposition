@@ -7,7 +7,6 @@ import * as fs from 'fs/promises';
 const PT = 72, pt = (inch: number) => inch * PT;
 
 function gridFit(availW: number, availH: number, cellW: number, cellH: number, gapH: number, gapV: number) {
-  // Account for gaps between cells
   const cols = Math.floor((availW + gapH) / (cellW + gapH));
   const rows = Math.floor((availH + gapV) / (cellH + gapV));
   return { cols, rows, up: cols * rows };
@@ -37,22 +36,27 @@ function drawIndividualCrops(
   const interiorLenH = Math.min(pt(0.03125), maxInteriorLenH);
   const interiorLenV = Math.min(pt(0.03125), maxInteriorLenV);
   const k = rgb(0,0,0);
+
   const halfW = cutW / 2;
   const halfH = cutH / 2;
   const xL = centerX - halfW;
   const xR = centerX + halfW;
   const yB = centerY - halfH;
   const yT = centerY + halfH;
+
   const topLen = isTopEdge ? perimeterLen : interiorLenV;
   const leftLen = isLeftEdge ? perimeterLen : interiorLenH;
   page.drawLine({ start:{x:xL, y:yT + off}, end:{x:xL, y:yT + off + topLen}, thickness: strokePt, color: k });
   page.drawLine({ start:{x:xL - off - leftLen, y:yT}, end:{x:xL - off, y:yT}, thickness: strokePt, color: k });
+
   const rightLen = isRightEdge ? perimeterLen : interiorLenH;
   page.drawLine({ start:{x:xR, y:yT + off}, end:{x:xR, y:yT + off + topLen}, thickness: strokePt, color: k });
   page.drawLine({ start:{x:xR + off, y:yT}, end:{x:xR + off + rightLen, y:yT}, thickness: strokePt, color: k });
+
   const bottomLen = isBottomEdge ? perimeterLen : interiorLenV;
   page.drawLine({ start:{x:xL, y:yB - off}, end:{x:xL, y:yB - off - bottomLen}, thickness: strokePt, color: k });
   page.drawLine({ start:{x:xL - off - leftLen, y:yB}, end:{x:xL - off, y:yB}, thickness: strokePt, color: k });
+
   page.drawLine({ start:{x:xR, y:yB - off}, end:{x:xR, y:yB - off - bottomLen}, thickness: strokePt, color: k });
   page.drawLine({ start:{x:xR + off, y:yB}, end:{x:xR + off + rightLen, y:yB}, thickness: strokePt, color: k });
 }
@@ -60,26 +64,24 @@ function drawIndividualCrops(
 /** Draw a small slug line near a long edge (0.25" in) and center it along that edge. */
 function drawSlugLine(page: any, text: string, sheetW: number, sheetH: number, font: any, marginIn: number = 0.25) {
   const m = pt(marginIn);
-  let size = 7; // default; will downsize if needed
+  let size = 7;
   const minSize = 4;
   const isLandscape = sheetW >= sheetH;
   const k = rgb(0,0,0);
 
   if (isLandscape) {
-    // Horizontal along bottom edge
     let maxWidth = sheetW - 2 * m;
     let tw = font.widthOfTextAtSize(text, size);
     while (tw > maxWidth && size > minSize) { size -= 0.5; tw = font.widthOfTextAtSize(text, size); }
     const x = (sheetW - tw) / 2;
-    const y = m; // 0.25" from bottom
+    const y = m;
     page.drawText(text, { x, y, size, font, color: k });
   } else {
-    // Vertical along left edge
     let maxLen = sheetH - 2 * m;
     let tw = font.widthOfTextAtSize(text, size);
     while (tw > maxLen && size > minSize) { size -= 0.5; tw = font.widthOfTextAtSize(text, size); }
-    const x = m; // 0.25" from left
-    const y = (sheetH - tw) / 2; // center along vertical span
+    const x = m;
+    const y = (sheetH - tw) / 2;
     page.drawText(text, { x, y, size, font, color: k, rotate: degrees(90) });
   }
 }
@@ -129,6 +131,91 @@ function drawTealOverlay(
   page.drawText(itemText, { x: itemX, y: itemY, size: itemSize, font, color: white });
 }
 
+/** Create a cover page with artwork, crops, and overlay */
+function createCoverPage(
+  outDoc: PDFDocument,
+  embeddedPages: any[],
+  pageIndex: number,
+  sheetSize: [number, number],
+  cols: number,
+  rows: number,
+  offX: number,
+  offY: number,
+  cutWpt: number,
+  cutHpt: number,
+  placeW: number,
+  placeH: number,
+  gapHpt: number,
+  gapVpt: number,
+  slugText: string,
+  orderId: string,
+  lineId: string,
+  font: any,
+  boldFont: any,
+  useRepeat: boolean
+) {
+  const [sheetWpt, sheetHpt] = sheetSize;
+  const page = outDoc.addPage(sheetSize);
+  
+  // Draw slug line
+  drawSlugLine(page, slugText, sheetWpt, sheetHpt, font);
+
+  // Draw crop marks
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const cellCenterX = offX + c * (cutWpt + gapHpt) + cutWpt / 2;
+      const cellCenterY = offY + r * (cutHpt + gapVpt) + cutHpt / 2;
+      const isLeftEdge = c === 0;
+      const isRightEdge = c === cols - 1;
+      const isBottomEdge = r === 0;
+      const isTopEdge = r === rows - 1;
+      drawIndividualCrops(page, cellCenterX, cellCenterY, cutWpt, cutHpt,
+        0.0625, 0.125, 0.5, isLeftEdge, isRightEdge, isBottomEdge, isTopEdge, gapHpt, gapVpt);
+    }
+  }
+
+  // Place artwork
+  if (pageIndex < embeddedPages.length) {
+    const ep = embeddedPages[pageIndex];
+    
+    if (useRepeat) {
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          const cellCenterX = offX + c * (cutWpt + gapHpt) + cutWpt / 2;
+          const cellCenterY = offY + r * (cutHpt + gapVpt) + cutHpt / 2;
+          const x = cellCenterX - placeW / 2;
+          const y = cellCenterY - placeH / 2;
+          page.drawPage(ep, { x, y, width: placeW, height: placeH, rotate: degrees(0) });
+        }
+      }
+    } else {
+      let placed = pageIndex;
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          if (placed < embeddedPages.length) {
+            const ep = embeddedPages[placed];
+            const cellCenterX = offX + c * (cutWpt + gapHpt) + cutWpt / 2;
+            const cellCenterY = offY + r * (cutHpt + gapVpt) + cutHpt / 2;
+            const x = cellCenterX - placeW / 2;
+            const y = cellCenterY - placeH / 2;
+            page.drawPage(ep, { x, y, width: placeW, height: placeH, rotate: degrees(0) });
+            placed++;
+          }
+        }
+      }
+    }
+  }
+
+  // Draw teal overlays
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const cellCenterX = offX + c * (cutWpt + gapHpt) + cutWpt / 2;
+      const cellCenterY = offY + r * (cutHpt + gapVpt) + cutHpt / 2;
+      drawTealOverlay(page, cellCenterX, cellCenterY, cutWpt, cutHpt, orderId, lineId, font, boldFont);
+    }
+  }
+}
+
 /* ---------- entry ---------- */
 export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
   try {
@@ -146,15 +233,16 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     const lineId = await pd('lineId') || '';
     const pagesStr = await pd('pages') || '';
 
-    // Bleed: if not explicitly provided, default to cut + 0.25"
+    // Bleed: MATCH BATCH SCRIPT — default to CUT when not provided
     const bleedWRaw = +await pd('bleedWidthInches');
     const bleedHRaw = +await pd('bleedHeightInches');
+    const bleedW = bleedWRaw > 0 ? bleedWRaw : cutW;
+    const bleedH = bleedHRaw > 0 ? bleedHRaw : cutH;
 
-    const bleedW = bleedWRaw > 0 ? bleedWRaw : (cutW + 0.25);
-    const bleedH = bleedHRaw > 0 ? bleedHRaw : (cutH + 0.25);
+    // Inter-piece gaps only (do NOT use as outer margins)
+    const gapH = +await pd('impositionMarginHorizontal') || 0;
+    const gapV = +await pd('impositionMarginVertical') || 0;
 
-    const marginH = +await pd('impositionMarginHorizontal') || 0;
-    const marginV = +await pd('impositionMarginVertical') || 0;
     const sheetW = +await pd('impositionWidth') || 0;
     const sheetH = +await pd('impositionHeight') || 0;
 
@@ -168,45 +256,17 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
 
     if (!sheetW || !sheetH || !cutW || !cutH) return job.fail('Missing/invalid size parameters');
 
-    // --- calculate grid fit with original orientation ---
-    const gapH = marginH;
-    const gapV = marginV;
+    // ---------- PLAN FIT (same as batch script approach) ----------
+    // Fixed outer margins
+    const outerMarginHIn = 0.125;
+    const outerMarginVIn = 0.125;
 
-    // Calculate available space with full margins
-    let availW = sheetW - 2*marginH;
-    let availH = sheetH - 2*marginV;
+    const availW = sheetW - 2 * outerMarginHIn;
+    const availH = sheetH - 2 * outerMarginVIn;
 
-    // Check if we need to reduce margins due to content overflow
-    const minCols = Math.floor((availW + gapH) / (cutW + gapH));
-    const minRows = Math.floor((availH + gapV) / (cutH + gapV));
-
-    // If even one item doesn't fit with full margins, calculate margin reduction
-    let marginReductionW = 0;
-    let marginReductionH = 0;
-
-    if (minCols < 1) {
-      const neededWidth = cutW;
-      const currentAvail = sheetW - 2*marginH;
-      if (currentAvail < neededWidth) {
-        marginReductionW = (neededWidth - currentAvail) / 2;
-        availW = sheetW - 2*(marginH - marginReductionW);
-      }
-    }
-
-    if (minRows < 1) {
-      const neededHeight = cutH;
-      const currentAvail = sheetH - 2*marginV;
-      if (currentAvail < neededHeight) {
-        marginReductionH = (neededHeight - currentAvail) / 2;
-        availH = sheetH - 2*(marginV - marginReductionH);
-      }
-    }
-
-    // Recalculate grid fit with adjusted available space
     const cols = Math.floor((availW + gapH) / (cutW + gapH));
     const rows = Math.floor((availH + gapV) / (cutH + gapV));
-
-    if (!cols || !rows) return job.fail('Piece too large for sheet even with reduced margins');
+    if (!cols || !rows) return job.fail('Piece too large for sheet with current gaps and fixed 0.125" outer margins');
 
     // --- convert to points ---
     const cutWpt = pt(cutW);
@@ -216,22 +276,18 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     const gapHpt = pt(gapH);
     const gapVpt = pt(gapV);
 
-    // Apply margin reductions
-    const effectiveMarginLeft = pt(marginH - marginReductionW);
-    const effectiveMarginRight = pt(marginH - marginReductionW);
-    const effectiveMarginTop = pt(marginV - marginReductionH);
-    const effectiveMarginBottom = pt(marginV - marginReductionH);
-
     const sheetWpt = pt(sheetW);
     const sheetHpt = pt(sheetH);
+    const outerMarginHpt = pt(outerMarginHIn);
+    const outerMarginVpt = pt(outerMarginVIn);
 
     // Array dimensions using cut size + gaps
     const arrWpt = cols * cutWpt + (cols - 1) * gapHpt;
     const arrHpt = rows * cutHpt + (rows - 1) * gapVpt;
 
-    // Starting position (bottom-left of array) with adjusted margins
-    const offX = effectiveMarginLeft + (sheetWpt - effectiveMarginLeft - effectiveMarginRight - arrWpt) / 2;
-    const offY = effectiveMarginBottom + (sheetHpt - effectiveMarginBottom - effectiveMarginTop - arrHpt) / 2;
+    // Starting position (bottom-left of array) centered inside the fixed outer margins
+    const offX = outerMarginHpt + (sheetWpt - 2*outerMarginHpt - arrWpt) / 2;
+    const offY = outerMarginVpt + (sheetHpt - 2*outerMarginVpt - arrHpt) / 2;
 
     // --- open job, create imposed doc ---
     const rwPath = await job.get(AccessLevel.ReadWrite);
@@ -257,10 +313,10 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
 
     await job.log(
       LogLevel.Info,
-      `Artwork: cut=${cutW}x${cutH}", bleed=${bleedW}x${bleedH}", hasBleed=${hasBleed}; cols=${cols}, rows=${rows}`
+      `Artwork: cut=${cutW}x${cutH}", bleed=${bleedW}x${bleedH}" (default=Cut if missing), hasBleed=${hasBleed}; cols=${cols}, rows=${rows}; outerMargins=0.125"`
     );
 
-    // --- BATCH EMBED ALL SOURCE PAGES ONCE (major size reduction) ---
+    // --- BATCH EMBED ALL SOURCE PAGES ONCE ---
     const pageIdxs = Array.from({ length: pageCount }, (_, i) => i);
     const embeddedPages = await outDoc.embedPdf(src, pageIdxs);
 
@@ -268,9 +324,23 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     const placeW = hasBleed ? bleedWpt : cutWpt;
     const placeH = hasBleed ? bleedHpt : cutHpt;
 
-    // ---------- Build imposed pages ----------
+    // ---------- Create cover pages first ----------
+    createCoverPage(
+      outDoc, embeddedPages, 0, sheetSize, cols, rows,
+      offX, offY, cutWpt, cutHpt, placeW, placeH, gapHpt, gapVpt,
+      slugText, orderId, lineId, font, boldFont, useRepeat
+    );
+
+    if (pageCount >= 2) {
+      createCoverPage(
+        outDoc, embeddedPages, 1, sheetSize, cols, rows,
+        offX, offY, cutWpt, cutHpt, placeW, placeH, gapHpt, gapVpt,
+        slugText, orderId, lineId, font, boldFont, useRepeat
+      );
+    }
+
+    // ---------- Build imposed pages (production pages) ----------
     if (useRepeat) {
-      // One sheet per source page, repeating the same page in every cell
       for (let srcPageIdx = 0; srcPageIdx < embeddedPages.length; srcPageIdx++) {
         const page = outDoc.addPage(sheetSize);
         drawSlugLine(page, slugText, sheetWpt, sheetHpt, font);
@@ -344,25 +414,6 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
             placed++;
             if (placed >= embeddedPages.length && (placed % perSheet) === 0) break;
           }
-        }
-      }
-    }
-
-    // ---------- Create a cover page by duplicating page 0 and overlaying info ----------
-    if (outDoc.getPageCount() > 0) {
-      const [dup] = await outDoc.copyPages(outDoc, [0]); // duplicate first imposed page
-      outDoc.insertPage(0, dup);
-      const cover = outDoc.getPage(0);
-
-      // Optional: put the slug on the cover too (under overlays)
-      drawSlugLine(cover, slugText, sheetWpt, sheetHpt, font);
-
-      // Draw teal overlays on each position
-      for (let r = 0; r < rows; r++) {
-        for (let c = 0; c < cols; c++) {
-          const cellCenterX = offX + c * (cutWpt + gapHpt) + cutWpt / 2;
-          const cellCenterY = offY + r * (cutHpt + gapVpt) + cutHpt / 2;
-          drawTealOverlay(cover, cellCenterX, cellCenterY, cutWpt, cutHpt, orderId, lineId, font, boldFont);
         }
       }
     }
