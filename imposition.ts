@@ -131,6 +131,27 @@ function drawTealOverlay(
   page.drawText(itemText, { x: itemX, y: itemY, size: itemSize, font, color: white });
 }
 
+/** Compute 0° or 180° rotation for a given cell (row/column) */
+function computeCellRotation(mode: string, startRot: boolean, r: number, c: number): number {
+  const m = String(mode ?? 'None').trim().toLowerCase();
+  if (m === 'rows') {
+    const isRot = (r % 2 === 0) ? !!startRot : !startRot;
+    return isRot ? 180 : 0;
+  }
+  if (m === 'columns' || m === 'cols' || m === 'column') {
+    const isRot = (c % 2 === 0) ? !!startRot : !startRot;
+    return isRot ? 180 : 0;
+  }
+  return 0; // None/unknown -> no rotation
+}
+
+/** Translate origin so a 180° rotation stays centered in the cell */
+function adjustXYForRotation(x: number, y: number, width: number, height: number, deg: number) {
+  const norm = ((deg % 360) + 360) % 360;
+  if (norm === 180) return { x: x + width, y: y + height };
+  return { x, y };
+}
+
 /** Create a cover page with artwork, crops, and overlay */
 function createCoverPage(
   outDoc: PDFDocument,
@@ -152,7 +173,9 @@ function createCoverPage(
   lineId: string,
   font: any,
   boldFont: any,
-  useRepeat: boolean
+  useRepeat: boolean,
+  artRotationMode: string,
+  rotateFirstCR: boolean
 ) {
   const [sheetWpt, sheetHpt] = sheetSize;
   const page = outDoc.addPage(sheetSize);
@@ -174,18 +197,20 @@ function createCoverPage(
     }
   }
 
-  // Place artwork
+  // Place artwork (with rotation logic)
   if (pageIndex < embeddedPages.length) {
-    const ep = embeddedPages[pageIndex];
+    const ep0 = embeddedPages[pageIndex];
     
     if (useRepeat) {
       for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
+          const rot = computeCellRotation(artRotationMode, rotateFirstCR, r, c);
           const cellCenterX = offX + c * (cutWpt + gapHpt) + cutWpt / 2;
           const cellCenterY = offY + r * (cutHpt + gapVpt) + cutHpt / 2;
-          const x = cellCenterX - placeW / 2;
-          const y = cellCenterY - placeH / 2;
-          page.drawPage(ep, { x, y, width: placeW, height: placeH, rotate: degrees(0) });
+          const x0 = cellCenterX - placeW / 2;
+          const y0 = cellCenterY - placeH / 2;
+          const { x, y } = adjustXYForRotation(x0, y0, placeW, placeH, rot);
+          page.drawPage(ep0, { x, y, width: placeW, height: placeH, rotate: degrees(rot) });
         }
       }
     } else {
@@ -194,11 +219,13 @@ function createCoverPage(
         for (let c = 0; c < cols; c++) {
           if (placed < embeddedPages.length) {
             const ep = embeddedPages[placed];
+            const rot = computeCellRotation(artRotationMode, rotateFirstCR, r, c);
             const cellCenterX = offX + c * (cutWpt + gapHpt) + cutWpt / 2;
             const cellCenterY = offY + r * (cutHpt + gapVpt) + cutHpt / 2;
-            const x = cellCenterX - placeW / 2;
-            const y = cellCenterY - placeH / 2;
-            page.drawPage(ep, { x, y, width: placeW, height: placeH, rotate: degrees(0) });
+            const x0 = cellCenterX - placeW / 2;
+            const y0 = cellCenterY - placeH / 2;
+            const { x, y } = adjustXYForRotation(x0, y0, placeW, placeH, rot);
+            page.drawPage(ep, { x, y, width: placeW, height: placeH, rotate: degrees(rot) });
             placed++;
           }
         }
@@ -206,7 +233,7 @@ function createCoverPage(
     }
   }
 
-  // Draw teal overlays
+  // Draw teal overlays (not rotated)
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
       const cellCenterX = offX + c * (cutWpt + gapHpt) + cutWpt / 2;
@@ -233,7 +260,7 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     const lineId = await pd('lineId') || '';
     const pagesStr = await pd('pages') || '';
 
-    // Bleed: MATCH BATCH SCRIPT — default to CUT when not provided
+    // Bleed: default to CUT when not provided
     const bleedWRaw = +await pd('bleedWidthInches');
     const bleedHRaw = +await pd('bleedHeightInches');
     const bleedW = bleedWRaw > 0 ? bleedWRaw : cutW;
@@ -251,12 +278,21 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     const impositionRepeat = (await pd('impositionRepeat')) === 'true' || (await pd('impositionRepeat')) === true;
     const impositionCutAndStack = (await pd('impositionCutAndStack')) === 'true' || (await pd('impositionCutAndStack')) === true;
 
+    // Rotation parameters
+    const artRotationMode = (await pd('artRotation')) || 'None'; // 'Rows' | 'Columns' | 'None'
+    const rotateFirstCR = ((await pd('rotateFirstColumnOrRow')) === 'true') || ((await pd('rotateFirstColumnOrRow')) === true);
+
+    // COVER PAGE DECISION (inksBack)
+    const inksBackVal = await pd('inksBack');
+    const inksBack = +inksBackVal || 0; // treat missing/invalid as 0
+    const numCoverPages = inksBack === 0 ? 1 : 2;
+
     // Default to repeat if none specified
     const useRepeat = impositionRepeat || (!booklet && !impositionCutAndStack);
 
     if (!sheetW || !sheetH || !cutW || !cutH) return job.fail('Missing/invalid size parameters');
 
-    // ---------- PLAN FIT (same as batch script approach) ----------
+    // ---------- PLAN FIT ----------
     // Fixed outer margins
     const outerMarginHIn = 0.125;
     const outerMarginVIn = 0.125;
@@ -313,10 +349,10 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
 
     await job.log(
       LogLevel.Info,
-      `Artwork: cut=${cutW}x${cutH}", bleed=${bleedW}x${bleedH}" (default=Cut if missing), hasBleed=${hasBleed}; cols=${cols}, rows=${rows}; outerMargins=0.125"`
+      `Artwork: cut=${cutW}x${cutH}", bleed=${bleedW}x${bleedH}" (default=Cut if missing), hasBleed=${hasBleed}; cols=${cols}, rows=${rows}; outerMargins=0.125"; artRotation=${artRotationMode || 'None'}; rotateFirst=${rotateFirstCR}; inksBack=${inksBack}; coverPages=${numCoverPages}`
     );
 
-    // --- BATCH EMBED ALL SOURCE PAGES ONCE ---
+    // --- EMBED ALL SOURCE PAGES ONCE ---
     const pageIdxs = Array.from({ length: pageCount }, (_, i) => i);
     const embeddedPages = await outDoc.embedPdf(src, pageIdxs);
 
@@ -324,18 +360,18 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     const placeW = hasBleed ? bleedWpt : cutWpt;
     const placeH = hasBleed ? bleedHpt : cutHpt;
 
-    // ---------- Create cover pages first ----------
+    // ---------- Create cover pages first (based on inksBack) ----------
     createCoverPage(
       outDoc, embeddedPages, 0, sheetSize, cols, rows,
       offX, offY, cutWpt, cutHpt, placeW, placeH, gapHpt, gapVpt,
-      slugText, orderId, lineId, font, boldFont, useRepeat
+      slugText, orderId, lineId, font, boldFont, useRepeat, artRotationMode, rotateFirstCR
     );
 
-    if (pageCount >= 2) {
+    if (numCoverPages === 2) {
       createCoverPage(
         outDoc, embeddedPages, 1, sheetSize, cols, rows,
         offX, offY, cutWpt, cutHpt, placeW, placeH, gapHpt, gapVpt,
-        slugText, orderId, lineId, font, boldFont, useRepeat
+        slugText, orderId, lineId, font, boldFont, useRepeat, artRotationMode, rotateFirstCR
       );
     }
 
@@ -360,14 +396,16 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
           }
         }
 
-        // Place page into every cell
+        // Place page into every cell (with rotation)
         for (let r = 0; r < rows; r++) {
           for (let c = 0; c < cols; c++) {
+            const rot = computeCellRotation(artRotationMode, rotateFirstCR, r, c);
             const cellCenterX = offX + c * (cutWpt + gapHpt) + cutWpt / 2;
             const cellCenterY = offY + r * (cutHpt + gapVpt) + cutHpt / 2;
-            const x = cellCenterX - placeW / 2;
-            const y = cellCenterY - placeH / 2;
-            page.drawPage(ep, { x, y, width: placeW, height: placeH, rotate: degrees(0) });
+            const x0 = cellCenterX - placeW / 2;
+            const y0 = cellCenterY - placeH / 2;
+            const { x, y } = adjustXYForRotation(x0, y0, placeW, placeH, rot);
+            page.drawPage(ep, { x, y, width: placeW, height: placeH, rotate: degrees(rot) });
           }
         }
       }
@@ -378,6 +416,7 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     } else {
       // Fill sheets sequentially with successive source pages
       let placed = 0;
+      const perSheet = cols * rows;
       while (placed < embeddedPages.length || (placed % perSheet) !== 0) {
         const page = outDoc.addPage(sheetSize);
         drawSlugLine(page, slugText, sheetWpt, sheetHpt, font);
@@ -404,12 +443,14 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
             const idx = placed % embeddedPages.length;
             const ep = embeddedPages[idx];
 
+            const rot = computeCellRotation(artRotationMode, rotateFirstCR, r, c);
             const cellCenterX = offX + c * (cutWpt + gapHpt) + cutWpt / 2;
             const cellCenterY = offY + r * (cutHpt + gapVpt) + cutHpt / 2;
-            const x = cellCenterX - placeW / 2;
-            const y = cellCenterY - placeH / 2;
+            const x0 = cellCenterX - placeW / 2;
+            const y0 = cellCenterY - placeH / 2;
+            const { x, y } = adjustXYForRotation(x0, y0, placeW, placeH, rot);
 
-            page.drawPage(ep, { x, y, width: placeW, height: placeH, rotate: degrees(0) });
+            page.drawPage(ep, { x, y, width: placeW, height: placeH, rotate: degrees(rot) });
 
             placed++;
             if (placed >= embeddedPages.length && (placed % perSheet) === 0) break;

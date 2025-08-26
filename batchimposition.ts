@@ -209,6 +209,32 @@ function planLayout(
   };
 }
 
+/** Decide 180° rotation for a given (row, col) based on item props */
+function computeArtRotationDegrees(it: any, r: number, c: number): number {
+  const mode = String(it.artRotation ?? 'None').trim().toLowerCase();
+  const startRot = !!it.rotateFirstColumnOrRow;
+
+  if (mode === 'rows') {
+    const isRot = (r % 2 === 0) ? startRot : !startRot;
+    return isRot ? 180 : 0;
+  }
+  if (mode === 'columns' || mode === 'cols' || mode === 'column') {
+    const isRot = (c % 2 === 0) ? startRot : !startRot;
+    return isRot ? 180 : 0;
+  }
+  return 0; // "None" or anything else
+}
+
+/** Adjust (x,y) so a 180° rotation keeps the artwork centered in its cell */
+function adjustXYForRotation(x: number, y: number, width: number, height: number, deg: number) {
+  const norm = ((deg % 360) + 360) % 360;
+  if (norm === 180) {
+    // pdf-lib rotates around the draw origin; translate by +W/+H to keep placement
+    return { x: x + width, y: y + height };
+  }
+  return { x, y };
+}
+
 /** Create a cover page with artwork, crops, and overlay */
 async function createCoverPage(
   outDoc: PDFDocument,
@@ -243,7 +269,7 @@ async function createCoverPage(
       0.0625, 0.125, 0.5, isLeftEdge, isRightEdge, isBottomEdge, isTopEdge, layout.gapHpt, layout.gapVpt);
   }
 
-  // Then draw artwork from the specified page
+  // Then draw artwork from the specified page (with rotation logic)
   for (const plc of placements) {
     const asset = itemAssets[plc.itemIdx];
     if (pageIndex >= asset.pageCount) continue;
@@ -262,13 +288,16 @@ async function createCoverPage(
 
     const cellCenterX = layout.offX + plc.c * (layout.cellWpt + layout.gapHpt) + layout.cellWpt / 2;
     const cellCenterY = layout.offY + plc.r * (layout.cellHpt + layout.gapVpt) + layout.cellHpt / 2;
-    const x = cellCenterX - placeW / 2;
-    const y = cellCenterY - placeH / 2;
+    const x0 = cellCenterX - placeW / 2;
+    const y0 = cellCenterY - placeH / 2;
 
-    page.drawPage(ep, { x, y, width: placeW, height: placeH, rotate: degrees(0) });
+    const rotDeg = computeArtRotationDegrees(it, plc.r, plc.c);
+    const { x, y } = adjustXYForRotation(x0, y0, placeW, placeH, rotDeg);
+
+    page.drawPage(ep, { x, y, width: placeW, height: placeH, rotate: degrees(rotDeg) });
   }
 
-  // Finally draw lavender overlays
+  // Finally draw lavender overlays (not rotated)
   for (const plc of placements) {
     const it = orderItems[plc.itemIdx];
     const cutWpt_i = pt(+it.cutWidthInches || 0);
@@ -332,7 +361,7 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     const orderItems: any[] = payload?.orderItems || [];
     if (!orderItems.length) return job.fail('No orderItems in payload');
 
-    // ---- Diagnostics logging (requested) ----
+    // ---- Diagnostics logging ----
     const maxCutWIn = Math.max(...orderItems.map(it => +it.cutWidthInches || 0));
     const maxCutHIn = Math.max(...orderItems.map(it => +it.cutHeightInches || 0));
     const maxBleedWIn = Math.max(...orderItems.map(it => (+it.bleedWidthInches || +it.cutWidthInches || 0)));
@@ -351,17 +380,14 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     let actualOrientation: string;
     
     if (requestedOrientation === 'portrait') {
-      // Portrait: width < height (use smaller dimension as width)
       sheetWIn = Math.min(impositionWidth, impositionHeight);
       sheetHIn = Math.max(impositionWidth, impositionHeight);
       actualOrientation = 'portrait';
     } else if (requestedOrientation === 'landscape') {
-      // Landscape: width > height (use larger dimension as width)
       sheetWIn = Math.max(impositionWidth, impositionHeight);
       sheetHIn = Math.min(impositionWidth, impositionHeight);
       actualOrientation = 'landscape';
     } else {
-      // No explicit orientation - use dimensions as provided
       sheetWIn = impositionWidth;
       sheetHIn = impositionHeight;
       actualOrientation = sheetHIn > sheetWIn ? 'portrait' : 'landscape';
@@ -421,14 +447,11 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     async function ensureEmbeddedPagesForItem(itAsset: any) {
       const itId = itAsset.it.id as number;
       if (perItemEmbeddedPages.has(itId)) return;
-
       const idxs = Array.from({ length: itAsset.pageCount }, (_, i) => i);
-      // Single embedPdf call with the full page index array
       const embedded = await outDoc.embedPdf(itAsset.bytes, idxs);
       perItemEmbeddedPages.set(itId, embedded);
     }
 
-    // Ensure all pages are embedded first
     for (const asset of itemAssets) {
       await ensureEmbeddedPagesForItem(asset);
     }
@@ -442,12 +465,14 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
       }
     }
 
-    // Create first cover page (page 1 artwork)
-    await createCoverPage(outDoc, layout, orderItems, itemAssets, perItemEmbeddedPages, placements, 0, font, boldFont);
+    // --- Cover pages based on inksBack ---
+    const anyBackInks = orderItems.some(it => (+it.inksBack || 0) !== 0);
+    const numCoverPages = anyBackInks ? 2 : 1;
+    await job.log(LogLevel.Info, `Cover pages: ${numCoverPages} (inksBack ${anyBackInks ? 'non-zero detected' : 'all zero'})`);
 
-    // Create second cover page (page 2 artwork) if there are items with at least 2 pages
-    const hasSecondPage = itemAssets.some(a => a.pageCount >= 2);
-    if (hasSecondPage) {
+    // Create cover pages (pageIndex 0, and 1 if needed)
+    await createCoverPage(outDoc, layout, orderItems, itemAssets, perItemEmbeddedPages, placements, 0, font, boldFont);
+    if (numCoverPages === 2) {
       await createCoverPage(outDoc, layout, orderItems, itemAssets, perItemEmbeddedPages, placements, 1, font, boldFont);
     }
 
@@ -493,10 +518,13 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
 
         const cellCenterX = layout.offX + plc.c * (layout.cellWpt + layout.gapHpt) + layout.cellWpt / 2;
         const cellCenterY = layout.offY + plc.r * (layout.cellHpt + layout.gapVpt) + layout.cellHpt / 2;
-        const x = cellCenterX - placeW / 2;
-        const y = cellCenterY - placeH / 2;
+        const x0 = cellCenterX - placeW / 2;
+        const y0 = cellCenterY - placeH / 2;
 
-        page.drawPage(ep, { x, y, width: placeW, height: placeH, rotate: degrees(0) });
+        const rotDeg = computeArtRotationDegrees(it, plc.r, plc.c);
+        const { x, y } = adjustXYForRotation(x0, y0, placeW, placeH, rotDeg);
+
+        page.drawPage(ep, { x, y, width: placeW, height: placeH, rotate: degrees(rotDeg) });
       }
     }
 
