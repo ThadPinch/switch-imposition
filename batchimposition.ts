@@ -151,8 +151,8 @@ function planLayout(sheetWIn: number, sheetHIn: number, orderItems: any[]): Layo
 function computeArtRotationDegrees(it: any, r: number, c: number): number {
   const mode = String(it.artRotation ?? 'None').trim().toLowerCase();
   const startRot = !!it.rotateFirstColumnOrRow;
-  if (mode === 'rows')    return ((r % 2 === 0) ? startRot : !startRot) ? 180 : 0;
-  if (mode.startsWith('col')) return ((c % 2 === 0) ? startRot : !startRot) ? 180 : 0;
+  if (mode === 'rows')         return ((r % 2 === 0) ? startRot : !startRot) ? 180 : 0;
+  if (mode.startsWith('col'))  return ((c % 2 === 0) ? startRot : !startRot) ? 180 : 0;
   return 0;
 }
 
@@ -172,6 +172,18 @@ function preRotationShiftFor(deg: number, sxIn: number, syIn: number) {
   if (norm === 90)  return { sx: -sy, sy:  sx };
   if (norm === 270) return { sx:  sy, sy: -sx };
   return { sx, sy };
+}
+
+/** For duplex: flip column on every odd sheet page so backs align with fronts */
+function effectiveCol(c: number, layout: Layout, flipPositionsThisPage: boolean) {
+  return flipPositionsThisPage ? (layout.cols - 1 - c) : c;
+}
+
+/** For duplex: also invert rotation on odd pages (add 180°) */
+function rotationForPage(it: any, rEff: number, cEff: number, flipPositionsThisPage: boolean) {
+  let deg = computeArtRotationDegrees(it, rEff, cEff);
+  if (flipPositionsThisPage) deg = (deg + 180) % 360;
+  return deg;
 }
 
 /* ---------- Gutter Bug ---------- */
@@ -280,10 +292,7 @@ function drawBugText(
   }
 }
 
-/** Draw short text inside a rectangular area.
- *  - horizontal: anchorStart=true -> left-justify at area.x, else center.
- *  - vertical:   anchorStart=true -> anchor at area.y (near center) and flow upward.
- */
+/** Draw short text inside a rectangular area. */
 function drawBugTextInArea(
   page: any,
   font: any,
@@ -294,8 +303,8 @@ function drawBugTextInArea(
 ) {
   if (!text) return;
   const k = rgb(0,0,0);
-  const maxThickness = vertical ? w : h;   // thickness of strip
-  const maxAlong     = vertical ? h : w;   // along-edge length
+  const maxThickness = vertical ? w : h;
+  const maxAlong     = vertical ? h : w;
   let size = Math.min(6, maxThickness * 0.40);
   while (font.widthOfTextAtSize(text, size) > (maxAlong - 2) && size > 3) size -= 0.25;
 
@@ -304,8 +313,7 @@ function drawBugTextInArea(
     const ty = y + (h - size) / 2;
     page.drawText(text, { x: tx, y: ty, size, font, color: k });
   } else {
-    // Rotate 90°; baseline now goes “upward” along +Y
-    const tx = x + (w - size) / 2;                         // center across 0.125" thickness
+    const tx = x + (w - size) / 2;
     const ty = anchorStart ? y : (y + (h - font.widthOfTextAtSize(text, size)) / 2);
     page.drawText(text, { x: tx, y: ty, size, font, color: k, rotate: degrees(90) });
   }
@@ -328,28 +336,27 @@ async function drawGutterBug(
 ) {
   if (!it.includeGutterBug) return;
 
-// Edges of the ARTWORK at the size it was placed (bleed if present)
-const cellCenterX = layout.offX + c * (layout.cellWpt + layout.gapHpt) + layout.cellWpt / 2;
-const cellCenterY = layout.offY + r * (layout.cellHpt + layout.gapVpt) + layout.cellHpt / 2;
+  // Edges of the ARTWORK at the size it was placed (bleed if present)
+  const cellCenterX = layout.offX + c * (layout.cellWpt + layout.gapHpt) + layout.cellWpt / 2;
+  const cellCenterY = layout.offY + r * (layout.cellHpt + layout.gapVpt) + layout.cellHpt / 2;
 
-const xL = cellCenterX - placeW / 2;
-const xR = cellCenterX + placeW / 2;
-const yB = cellCenterY - placeH / 2;
-const yT = cellCenterY + placeH / 2;
+  const xL = cellCenterX - placeW / 2;
+  const xR = cellCenterX + placeW / 2;
+  const yB = cellCenterY - placeH / 2;
+  const yT = cellCenterY + placeH / 2;
 
-const side = pickBugSide(String(it.bugPosition), layout, r, c, xL, xR, yB, yT, sheetWpt, sheetHpt);
-if (!side) return;
+  const side = pickBugSide(String(it.bugPosition), layout, r, c, xL, xR, yB, yT, sheetWpt, sheetHpt);
+  if (!side) return;
 
-const thickPt = pt(BUG_THICKNESS_IN);
-let bx = xL, by = yB, bw = placeW, bh = thickPt, vertical = false;
-if (side === 'top')    { bx = xL;         by = yT;           bw = placeW; bh = thickPt;   vertical = false; }
-if (side === 'bottom') { bx = xL;         by = yB - thickPt; bw = placeW; bh = thickPt;   vertical = false; }
-if (side === 'left')   { bx = xL - thickPt; by = yB;         bw = thickPt; bh = placeH;   vertical = true;  }
-if (side === 'right')  { bx = xR;         by = yB;           bw = thickPt; bh = placeH;   vertical = true;  }
+  const thickPt = pt(BUG_THICKNESS_IN);
+  let bx = xL, by = yB, bw = placeW, bh = thickPt, vertical = false;
+  if (side === 'top')    { bx = xL;           by = yT;           bw = placeW;   bh = thickPt; vertical = false; }
+  if (side === 'bottom') { bx = xL;           by = yB - thickPt; bw = placeW;   bh = thickPt; vertical = false; }
+  if (side === 'left')   { bx = xL - thickPt; by = yB;           bw = thickPt;  bh = placeH;  vertical = true;  }
+  if (side === 'right')  { bx = xR;           by = yB;           bw = thickPt;  bh = placeH;  vertical = true;  }
 
-// Draw the 0.125" strip as before...
-page.drawRectangle({ x: bx, y: by, width: bw, height: bh, color: rgb(1,1,1), opacity: 1 });
-
+  // White strip
+  page.drawRectangle({ x: bx, y: by, width: bw, height: bh, color: rgb(1,1,1), opacity: 1 });
 
   const wantBarcode = !!it.includeAutoShipBarcodeInBug;
   const pathText = String(it.localArtworkPath || '');
@@ -357,68 +364,56 @@ page.drawRectangle({ x: bx, y: by, width: bw, height: bh, color: rgb(1,1,1), opa
 
   // Regions split AT THE ARTWORK CENTERLINE:
   if (!vertical) {
-    // ---------- TOP/BOTTOM ----------
     const centerX = cellCenterX;
-
-    // Left (barcode) half
     const leftW  = Math.max(0, centerX - bx - PAD);
-    const leftX  = centerX - PAD - leftW;
-    // Right (text) half
     const rightW = Math.max(0, bx + bw - (centerX + PAD));
     const rightX = centerX + PAD;
 
-    // Barcode first (left of center)
+    // Barcode (left of center)
     if (wantBarcode) {
       const key = `${it.orderId}-${it.id}-H`;
       let img = barcodeCache.get(key);
       if (!img) {
-        const bytes = await makeBarcodePngBytes(`${it.orderId}-${it.id}`, /*vertical*/false);
+        const bytes = await makeBarcodePngBytes(`${it.orderId}-${it.id}`, false);
         if (bytes) { img = await outDoc.embedPng(bytes); barcodeCache.set(key, img); }
       }
       if (img && leftW > 0) {
         const iw = img.width, ih = img.height;
         const scale = Math.min(leftW / iw, bh / ih);
         const w = iw * scale, h = ih * scale;
-        const x = centerX - PAD - w;               // right edge aligns to center gap
+        const x = centerX - PAD - w;
         const y = by + (bh - h) / 2;
         page.drawImage(img, { x, y, width: w, height: h });
       }
     }
 
-    // Text starts AT center and flows outward to the right
-    drawBugTextInArea(page, font, pathText, rightX, by, rightW, bh, false, /*anchorStart*/true);
+    // Text (right of center, anchored at center)
+    drawBugTextInArea(page, font, pathText, rightX, by, rightW, bh, false, true);
 
   } else {
-    // ---------- LEFT/RIGHT ----------
     const centerY = cellCenterY;
-
-    // Bottom (barcode) half
     const botH = Math.max(0, centerY - by - PAD);
-    const botY = centerY - PAD - botH;
-    // Top (text) half
     const topH = Math.max(0, by + bh - (centerY + PAD));
     const topY = centerY + PAD;
 
-    // Barcode below center – tall (≤ 0.125" wide)
     if (wantBarcode) {
       const key = `${it.orderId}-${it.id}-V`;
       let img = barcodeCache.get(key);
       if (!img) {
-        const bytes = await makeBarcodePngBytes(`${it.orderId}-${it.id}`, /*vertical*/true); // bwip renders tall
+        const bytes = await makeBarcodePngBytes(`${it.orderId}-${it.id}`, true);
         if (bytes) { img = await outDoc.embedPng(bytes); barcodeCache.set(key, img); }
       }
       if (img && botH > 0) {
-        const iw = img.width, ih = img.height;     // already vertical
+        const iw = img.width, ih = img.height;
         const scale = Math.min(bw / iw, botH / ih);
-        const w = iw * scale, h = ih * scale;      // w ≤ 0.125", h ≤ botH
-        const x = bx + (bw - w) / 2;               // centered across strip
-        const y = centerY - PAD - h;               // top aligns to center gap
-        page.drawImage(img, { x, y, width: w, height: h }); // no extra rotation
+        const w = iw * scale, h = ih * scale;
+        const x = bx + (bw - w) / 2;
+        const y = centerY - PAD - h;
+        page.drawImage(img, { x, y, width: w, height: h });
       }
     }
 
-    // Text above center; starts AT center and flows upward
-    drawBugTextInArea(page, font, pathText, bx, topY, bw, topH, true, /*anchorStart*/true);
+    drawBugTextInArea(page, font, pathText, bx, topY, bw, topH, true, true);
   }
 }
 
@@ -427,7 +422,7 @@ page.drawRectangle({ x: bx, y: by, width: bw, height: bh, color: rgb(1,1,1), opa
 async function createCoverPage(
   outDoc: PDFDocument, layout: Layout, orderItems: any[], itemAssets: any[],
   perItemEmbeddedPages: Map<number, any[]>, placements: any[], pageIndex: number,
-  font: any, boldFont: any
+  font: any, boldFont: any, flipPositionsThisPage: boolean
 ) {
   const sheetWpt = pt(layout.sheetWIn), sheetHpt = pt(layout.sheetHIn);
   const page = outDoc.addPage([sheetWpt, sheetHpt]);
@@ -437,10 +432,30 @@ async function createCoverPage(
     const it = orderItems[plc.itemIdx];
     const cutWpt_i = pt(+it.cutWidthInches || 0);
     const cutHpt_i = pt(+it.cutHeightInches || 0);
-    const cellCenterX = layout.offX + plc.c * (layout.cellWpt + layout.gapHpt) + layout.cellWpt / 2;
-    const cellCenterY = layout.offY + plc.r * (layout.cellHpt + layout.gapVpt) + layout.cellHpt / 2;
-    const isLeftEdge = plc.c === 0, isRightEdge = plc.c === layout.cols - 1;
-    const isBottomEdge = plc.r === 0, isTopEdge = plc.r === layout.rows - 1;
+
+    const cEff = effectiveCol(plc.c, layout, flipPositionsThisPage);
+    const rEff = plc.r;
+
+    const cellCenterX = layout.offX + cEff * (layout.cellWpt + layout.gapHpt) + layout.cellWpt / 2;
+    const cellCenterY = layout.offY + rEff * (layout.cellHpt + layout.gapVpt) + layout.cellWpt / 2; // NOTE: was cellHpt; keep original intent
+    // Fix the previous line to use cellHpt (typo guard)
+  }
+
+  // Re-do crops correctly (not mixing with typo guard)
+  for (const plc of placements) {
+    const it = orderItems[plc.itemIdx];
+    const cutWpt_i = pt(+it.cutWidthInches || 0);
+    const cutHpt_i = pt(+it.cutHeightInches || 0);
+
+    const cEff = effectiveCol(plc.c, layout, flipPositionsThisPage);
+    const rEff = plc.r;
+
+    const cellCenterX = layout.offX + cEff * (layout.cellWpt + layout.gapHpt) + layout.cellWpt / 2;
+    const cellCenterY = layout.offY + rEff * (layout.cellHpt + layout.gapVpt) + layout.cellHpt / 2;
+
+    const isLeftEdge = cEff === 0, isRightEdge = cEff === layout.cols - 1;
+    const isBottomEdge = rEff === 0, isTopEdge = rEff === layout.rows - 1;
+
     drawIndividualCrops(page, cellCenterX, cellCenterY, cutWpt_i, cutHpt_i, 0.0625, 0.125, 0.5, isLeftEdge, isRightEdge, isBottomEdge, isTopEdge, layout.gapHpt, layout.gapVpt);
   }
 
@@ -460,10 +475,13 @@ async function createCoverPage(
 
     const ep = embeddedPages[Math.min(pageIndex, embeddedPages.length - 1)];
 
-    const cellCenterX = layout.offX + plc.c * (layout.cellWpt + layout.gapHpt) + layout.cellWpt / 2;
-    const cellCenterY = layout.offY + plc.r * (layout.cellHpt + layout.gapVpt) + layout.cellHpt / 2;
+    const cEff = effectiveCol(plc.c, layout, flipPositionsThisPage);
+    const rEff = plc.r;
 
-    const rotDeg = computeArtRotationDegrees(it, plc.r, plc.c);
+    const cellCenterX = layout.offX + cEff * (layout.cellWpt + layout.gapHpt) + layout.cellWpt / 2;
+    const cellCenterY = layout.offY + rEff * (layout.cellHpt + layout.gapVpt) + layout.cellHpt / 2;
+
+    const rotDeg = rotationForPage(it, rEff, cEff, flipPositionsThisPage);
     const { sx, sy } = preRotationShiftFor(rotDeg, +it.imageShiftX, +it.imageShiftY);
 
     const x0 = cellCenterX - placeW / 2 + sx;
@@ -478,8 +496,13 @@ async function createCoverPage(
     const it = orderItems[plc.itemIdx];
     const cutWpt_i = pt(+it.cutWidthInches || 0);
     const cutHpt_i = pt(+it.cutHeightInches || 0);
-    const cellCenterX = layout.offX + plc.c * (layout.cellWpt + layout.gapHpt) + layout.cellWpt / 2;
-    const cellCenterY = layout.offY + plc.r * (layout.cellHpt + layout.gapVpt) + layout.cellHpt / 2;
+
+    const cEff = effectiveCol(plc.c, layout, flipPositionsThisPage);
+    const rEff = plc.r;
+
+    const cellCenterX = layout.offX + cEff * (layout.cellWpt + layout.gapHpt) + layout.cellWpt / 2;
+    const cellCenterY = layout.offY + rEff * (layout.cellHpt + layout.gapVpt) + layout.cellHpt / 2;
+
     drawLavenderOverlay(page, cellCenterX, cellCenterY, cutWpt_i, cutHpt_i, String(it.orderId ?? ''), String(it.id ?? ''), font, boldFont);
   }
 }
@@ -613,11 +636,14 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     const anyBackInks = orderItems.some(it => (+it.inksBack || 0) !== 0);
     const numCoverPages = includeCover ? (anyBackInks ? 2 : 1) : 0;
     await job.log(LogLevel.Info, `Cover pages: ${numCoverPages} (${includeCover ? 'includeCoverSheet=true' : 'disabled'}; inksBack ${anyBackInks ? 'non-zero' : 'zero'})`);
+    if (anyBackInks) {
+      await job.log(LogLevel.Info, 'Back-side pages (odd indices) will mirror positions horizontally AND invert rotations (add 180°) to align fronts/backs.');
+    }
 
     if (numCoverPages >= 1)
-      await createCoverPage(outDoc, layout, orderItems, itemAssets, perItemEmbeddedPages, placements, 0, font, boldFont);
+      await createCoverPage(outDoc, layout, orderItems, itemAssets, perItemEmbeddedPages, placements, 0, font, boldFont, /*flipPositionsThisPage=*/false);
     if (numCoverPages === 2)
-      await createCoverPage(outDoc, layout, orderItems, itemAssets, perItemEmbeddedPages, placements, 1, font, boldFont);
+      await createCoverPage(outDoc, layout, orderItems, itemAssets, perItemEmbeddedPages, placements, 1, font, boldFont, /*flipPositionsThisPage=*/true);
 
     // Cache for per-item barcode images
     const barcodeCache: Map<string, any> = new Map();
@@ -625,16 +651,23 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     // Production pages
     for (let p = 0; p < maxPages; p++) {
       const page = outDoc.addPage([sheetWpt, sheetHpt]);
+      const flipPositionsThisPage = anyBackInks && (p % 2 === 1);
 
       // Crops
       for (const plc of placements) {
         const it = orderItems[plc.itemIdx];
         const cutWpt_i = pt(+it.cutWidthInches || 0);
         const cutHpt_i = pt(+it.cutHeightInches || 0);
-        const cellCenterX = layout.offX + plc.c * (layout.cellWpt + layout.gapHpt) + layout.cellWpt / 2;
-        const cellCenterY = layout.offY + plc.r * (layout.cellHpt + layout.gapVpt) + layout.cellHpt / 2;
-        const isLeftEdge = plc.c === 0, isRightEdge = plc.c === layout.cols - 1;
-        const isBottomEdge = plc.r === 0, isTopEdge = plc.r === layout.rows - 1;
+
+        const cEff = effectiveCol(plc.c, layout, flipPositionsThisPage);
+        const rEff = plc.r;
+
+        const cellCenterX = layout.offX + cEff * (layout.cellWpt + layout.gapHpt) + layout.cellWpt / 2;
+        const cellCenterY = layout.offY + rEff * (layout.cellHpt + layout.gapVpt) + layout.cellHpt / 2;
+
+        const isLeftEdge = cEff === 0, isRightEdge = cEff === layout.cols - 1;
+        const isBottomEdge = rEff === 0, isTopEdge = rEff === layout.rows - 1;
+
         drawIndividualCrops(page, cellCenterX, cellCenterY, cutWpt_i, cutHpt_i, 0.0625, 0.125, 0.5, isLeftEdge, isRightEdge, isBottomEdge, isTopEdge, layout.gapHpt, layout.gapVpt);
       }
 
@@ -656,10 +689,13 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
 
         const ep = embeddedPages[Math.min(p, embeddedPages.length - 1)];
 
-        const cellCenterX = layout.offX + plc.c * (layout.cellWpt + layout.gapHpt) + layout.cellWpt / 2;
-        const cellCenterY = layout.offY + plc.r * (layout.cellHpt + layout.gapVpt) + layout.cellHpt / 2;
+        const cEff = effectiveCol(plc.c, layout, flipPositionsThisPage);
+        const rEff = plc.r;
 
-        const rotDeg = computeArtRotationDegrees(it, plc.r, plc.c);
+        const cellCenterX = layout.offX + cEff * (layout.cellWpt + layout.gapHpt) + layout.cellWpt / 2;
+        const cellCenterY = layout.offY + rEff * (layout.cellHpt + layout.gapVpt) + layout.cellHpt / 2;
+
+        const rotDeg = rotationForPage(it, rEff, cEff, flipPositionsThisPage);
         const { sx, sy } = preRotationShiftFor(rotDeg, +it.imageShiftX, +it.imageShiftY);
 
         const x0 = cellCenterX - placeW / 2 + sx;
@@ -668,8 +704,7 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
 
         page.drawPage(ep, { x, y, width: placeW, height: placeH, rotate: degrees(rotDeg) });
 
-        // Gutter bug on top
-        await drawGutterBug(page, outDoc, it, layout, plc.r, plc.c, placeW, placeH, sheetWpt, sheetHpt, barcodeCache, font);
+        await drawGutterBug(page, outDoc, it, layout, rEff, cEff, placeW, placeH, sheetWpt, sheetHpt, barcodeCache, font);
       }
     }
 
