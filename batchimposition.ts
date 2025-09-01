@@ -362,14 +362,12 @@ async function drawGutterBug(
   const pathText = String(it.localArtworkPath || '');
   const PAD = 2; // pts gap at center
 
-  // Regions split AT THE ARTWORK CENTERLINE:
   if (!vertical) {
     const centerX = cellCenterX;
     const leftW  = Math.max(0, centerX - bx - PAD);
     const rightW = Math.max(0, bx + bw - (centerX + PAD));
     const rightX = centerX + PAD;
 
-    // Barcode (left of center)
     if (wantBarcode) {
       const key = `${it.orderId}-${it.id}-H`;
       let img = barcodeCache.get(key);
@@ -387,7 +385,6 @@ async function drawGutterBug(
       }
     }
 
-    // Text (right of center, anchored at center)
     drawBugTextInArea(page, font, pathText, rightX, by, rightW, bh, false, true);
 
   } else {
@@ -437,20 +434,6 @@ async function createCoverPage(
     const rEff = plc.r;
 
     const cellCenterX = layout.offX + cEff * (layout.cellWpt + layout.gapHpt) + layout.cellWpt / 2;
-    const cellCenterY = layout.offY + rEff * (layout.cellHpt + layout.gapVpt) + layout.cellWpt / 2; // NOTE: was cellHpt; keep original intent
-    // Fix the previous line to use cellHpt (typo guard)
-  }
-
-  // Re-do crops correctly (not mixing with typo guard)
-  for (const plc of placements) {
-    const it = orderItems[plc.itemIdx];
-    const cutWpt_i = pt(+it.cutWidthInches || 0);
-    const cutHpt_i = pt(+it.cutHeightInches || 0);
-
-    const cEff = effectiveCol(plc.c, layout, flipPositionsThisPage);
-    const rEff = plc.r;
-
-    const cellCenterX = layout.offX + cEff * (layout.cellWpt + layout.gapHpt) + layout.cellWpt / 2;
     const cellCenterY = layout.offY + rEff * (layout.cellHpt + layout.gapVpt) + layout.cellHpt / 2;
 
     const isLeftEdge = cEff === 0, isRightEdge = cEff === layout.cols - 1;
@@ -482,7 +465,10 @@ async function createCoverPage(
     const cellCenterY = layout.offY + rEff * (layout.cellHpt + layout.gapVpt) + layout.cellHpt / 2;
 
     const rotDeg = rotationForPage(it, rEff, cEff, flipPositionsThisPage);
-    const { sx, sy } = preRotationShiftFor(rotDeg, +it.imageShiftX, +it.imageShiftY);
+
+    // Invert X shift for odd pages (pre-rotation)
+    const inputShiftX = flipPositionsThisPage ? -(+it.imageShiftX || 0) : (+it.imageShiftX || 0);
+    const { sx, sy } = preRotationShiftFor(rotDeg, inputShiftX, +it.imageShiftY);
 
     const x0 = cellCenterX - placeW / 2 + sx;
     const y0 = cellCenterY - placeH / 2 + sy;
@@ -637,7 +623,7 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     const numCoverPages = includeCover ? (anyBackInks ? 2 : 1) : 0;
     await job.log(LogLevel.Info, `Cover pages: ${numCoverPages} (${includeCover ? 'includeCoverSheet=true' : 'disabled'}; inksBack ${anyBackInks ? 'non-zero' : 'zero'})`);
     if (anyBackInks) {
-      await job.log(LogLevel.Info, 'Back-side pages (odd indices) will mirror positions horizontally AND invert rotations (add 180°) to align fronts/backs.');
+      await job.log(LogLevel.Info, 'Back-side pages (odd indices) will mirror positions horizontally, invert rotations (add 180°), and invert X shift.');
     }
 
     if (numCoverPages >= 1)
@@ -696,7 +682,10 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
         const cellCenterY = layout.offY + rEff * (layout.cellHpt + layout.gapVpt) + layout.cellHpt / 2;
 
         const rotDeg = rotationForPage(it, rEff, cEff, flipPositionsThisPage);
-        const { sx, sy } = preRotationShiftFor(rotDeg, +it.imageShiftX, +it.imageShiftY);
+
+        // Invert X shift for odd pages (pre-rotation)
+        const inputShiftX = flipPositionsThisPage ? -(+it.imageShiftX || 0) : (+it.imageShiftX || 0);
+        const { sx, sy } = preRotationShiftFor(rotDeg, inputShiftX, +it.imageShiftY);
 
         const x0 = cellCenterX - placeW / 2 + sx;
         const y0 = cellCenterY - placeH / 2 + sy;
@@ -713,7 +702,7 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     const pdfBytes = await outDoc.save({ useObjectStreams: true });
     await fs.writeFile(rwPath, pdfBytes);
 
-    const base = 'Batch-' + payload.batchId + '.pdf';
+    const base = 'Batch-' + payload.batchId + '-' + payload.artworkUrlId + '.pdf';
     if ((job as any).sendToSingle) await (job as any).sendToSingle(base);
     else job.sendTo(rwPath, 0, base);
   } catch (e:any) {
