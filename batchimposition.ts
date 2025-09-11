@@ -493,6 +493,129 @@ async function createCoverPage(
   }
 }
 
+function clamp(n: number, lo: number, hi: number) { return Math.max(lo, Math.min(hi, n)); }
+function normDeg(d: number) { return ((d % 360) + 360) % 360; }
+function deg2rad(d: number) { return normDeg(d) * Math.PI / 180; }
+
+
+// Default size for in-art barcode (clamped to the cut area)
+const IN_ART_BARCODE_DEFAULT_W_IN = 1.00;
+const IN_ART_BARCODE_DEFAULT_H_IN = 0.25;
+
+/**
+ * Draw an in-art AutoShip barcode on the last production sheet.
+ * X/Y are in inches from the CUT-BOX lower-left in *art space* (unrotated).
+ * We rotate that intended position about the CUT center by rotDeg so the
+ * barcode stays in the same place on the artwork no matter the placement rotation.
+ */
+async function drawInArtBarcodeOnLastSheet(
+  page: any,
+  outDoc: PDFDocument,
+  it: any,
+  isLastProductionSheet: boolean,
+  rotDeg: number,
+  x0: number, y0: number,             // pre-rotation artwork bottom-left (PLACED area)
+  cutWpt: number, cutHpt: number,     // cut size in pts
+  bleedWpt: number, bleedHpt: number, // bleed size in pts (or = cut)
+  barcodeCache: Map<string, any>,
+  font: any
+) {
+  if (!isLastProductionSheet) return;
+  if (!it?.includeAutoShipBarcodeInArtOnLastSheet) return;
+
+  // Cut-box offset inside placed area (if bleed is present, cut sits centered inside bleed)
+  const cutOffX = Math.max(0, (bleedWpt - cutWpt) / 2);
+  const cutOffY = Math.max(0, (bleedHpt - cutHpt) / 2);
+
+  // User-specified offsets from CUT lower-left (in points)
+  const inXptRaw = pt(+it.inArtBarcodeX || 0);
+  const inYptRaw = pt(+it.inArtBarcodeY || 0);
+
+  // Constrain negative inputs defensively
+  const inXpt = Math.max(0, inXptRaw);
+  const inYpt = Math.max(0, inYptRaw);
+
+  // Caps so the barcode cannot exceed what remains from (inX,inY) to the cut edges (0° case).
+  const capW = Math.max(2, cutWpt - inXpt);
+  const capH = Math.max(2, cutHpt - inYpt);
+
+  // Target size, clamped to caps above
+  const targetW = Math.min(pt(IN_ART_BARCODE_DEFAULT_W_IN), capW);
+  const targetH = Math.min(pt(IN_ART_BARCODE_DEFAULT_H_IN), capH);
+
+  // Barcode image (horizontal); we will rotate with the art by rotDeg
+  const cacheKey = `${it.orderId}-${it.id}-INART-H`;
+  let img = barcodeCache.get(cacheKey);
+  if (!img) {
+    const bytes = await makeBarcodePngBytes(`${it.orderId}-${it.id}`, /*vertical=*/false);
+    if (bytes) { img = await outDoc.embedPng(bytes); barcodeCache.set(cacheKey, img); }
+  }
+
+  // Compute size (w,h) with aspect respected; fall back to text if needed
+  let w = targetW, h = targetH, useTextFallback = !img;
+
+  if (img) {
+    const iw = img.width, ih = img.height;
+    const scale = Math.max(0.01, Math.min(targetW / iw, targetH / ih));
+    w = iw * scale; h = ih * scale;
+  }
+
+  // CUT center in sheet coords
+  const cutLLx = x0 + cutOffX;
+  const cutLLy = y0 + cutOffY;
+  const cutCx  = cutLLx + cutWpt / 2;
+  const cutCy  = cutLLy + cutHpt / 2;
+
+  // Intended *center* of the barcode in unrotated (art-space) coords:
+  // Start at CUT LL, add user offsets, then add half the barcode size
+  const centerX0 = cutLLx + inXpt + w / 2;
+  const centerY0 = cutLLy + inYpt + h / 2;
+
+  // Rotate that center about the CUT center by rotDeg
+  const theta = deg2rad(rotDeg);
+  const cosT = Math.cos(theta), sinT = Math.sin(theta);
+  const vx = centerX0 - cutCx;
+  const vy = centerY0 - cutCy;
+  const centerX = cutCx + (vx * cosT - vy * sinT);
+  const centerY = cutCy + (vx * sinT + vy * cosT);
+
+  // Convert center -> bottom-left draw point for a rectangle rotated by rotDeg
+  // bottom-left = center - R * (w/2, h/2)
+  const halfWx = (w / 2) * cosT - (h / 2) * sinT;
+  const halfWy = (w / 2) * sinT + (h / 2) * cosT;
+  const drawX = centerX - halfWx;
+  const drawY = centerY - halfWy;
+
+  if (!useTextFallback) {
+    page.drawImage(img, { x: drawX, y: drawY, width: w, height: h, rotate: degrees(normDeg(rotDeg)) });
+    return;
+  }
+
+  // ---- Text fallback if bwip-js not present ----
+  const text = `${it.orderId}-${it.id}`;
+  // Fit text to target box width (unrotated width constraint in art-space); conservative fit
+  let size = 8;
+  const maxWForText = targetW;
+  while (size > 5 && font.widthOfTextAtSize(text, size) > maxWForText) size -= 0.5;
+  const tw = font.widthOfTextAtSize(text, size);
+  const th = size;
+
+  // Recompute using text box w/h
+  const centerX0_txt = cutLLx + inXpt + tw / 2;
+  const centerY0_txt = cutLLy + inYpt + th / 2;
+  const vx2 = centerX0_txt - cutCx;
+  const vy2 = centerY0_txt - cutCy;
+  const centerX_txt = cutCx + (vx2 * cosT - vy2 * sinT);
+  const centerY_txt = cutCy + (vx2 * sinT + vy2 * cosT);
+  const halfWx2 = (tw / 2) * cosT - (th / 2) * sinT;
+  const halfWy2 = (tw / 2) * sinT + (th / 2) * cosT;
+  const drawX_txt = centerX_txt - halfWx2;
+  const drawY_txt = centerY_txt - halfWy2;
+
+  page.drawText(text, { x: drawX_txt, y: drawY_txt, size, font, color: rgb(0,0,0), rotate: degrees(normDeg(rotDeg)) });
+}
+
+
 /* ---------- entry ---------- */
 export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
   try {
@@ -694,7 +817,23 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
         page.drawPage(ep, { x, y, width: placeW, height: placeH, rotate: degrees(rotDeg) });
 
         await drawGutterBug(page, outDoc, it, layout, rEff, cEff, placeW, placeH, sheetWpt, sheetHpt, barcodeCache, font);
+
+        // >>> ADD THIS: draw in-art barcode on LAST production sheet <<<
+        const isLastProductionSheet = (p === maxPages - 1);
+        await drawInArtBarcodeOnLastSheet(
+          page,
+          outDoc,
+          it,
+          isLastProductionSheet,
+          rotDeg,
+          x0, y0,
+          cutWpt_i, cutHpt_i,
+          bleedWpt_i, bleedHpt_i,
+          barcodeCache,
+          font
+        );
       }
+
     }
 
     // Save & send
