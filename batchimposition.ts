@@ -103,9 +103,14 @@ function httpGetBytes(url: string): Promise<Uint8Array> {
   });
 }
 
-/** PLAN LAYOUT */
-function planLayout(sheetWIn: number, sheetHIn: number, orderItems: any[]): Layout | null {
-  const required = orderItems.length;
+/** PLAN LAYOUT (supports requiredPositions override) */
+function planLayout(
+  sheetWIn: number,
+  sheetHIn: number,
+  orderItems: any[],
+  requiredCountOverride?: number
+): Layout | null {
+  const required = Math.max(1, +(requiredCountOverride ?? orderItems.length));
 
   const maxCutWIn = Math.max(...orderItems.map(it => +it.cutWidthInches || 0));
   const maxCutHIn = Math.max(...orderItems.map(it => +it.cutHeightInches || 0));
@@ -415,20 +420,21 @@ async function drawGutterBug(
 }
 
 
-/** COVER PAGE */
+/** COVER PAGE (supports blanks for crops only) */
 async function createCoverPage(
   outDoc: PDFDocument, layout: Layout, orderItems: any[], itemAssets: any[],
-  perItemEmbeddedPages: Map<number, any[]>, placements: any[], pageIndex: number,
-  font: any, boldFont: any, flipPositionsThisPage: boolean
+  perItemEmbeddedPages: Map<number, any[]>, placements: Array<{r:number;c:number;itemIdx:number|null}>,
+  pageIndex: number, font: any, boldFont: any, flipPositionsThisPage: boolean,
+  defaultCutWpt: number, defaultCutHpt: number
 ) {
   const sheetWpt = pt(layout.sheetWIn), sheetHpt = pt(layout.sheetHIn);
   const page = outDoc.addPage([sheetWpt, sheetHpt]);
 
-  // Crops
+  // Crops for ALL placements (blanks included)
   for (const plc of placements) {
-    const it = orderItems[plc.itemIdx];
-    const cutWpt_i = pt(+it.cutWidthInches || 0);
-    const cutHpt_i = pt(+it.cutHeightInches || 0);
+    const hasItem = plc.itemIdx !== null;
+    const cutWpt_i = hasItem ? pt(+orderItems[plc.itemIdx!].cutWidthInches || 0) : defaultCutWpt;
+    const cutHpt_i = hasItem ? pt(+orderItems[plc.itemIdx!].cutHeightInches || 0) : defaultCutHpt;
 
     const cEff = effectiveCol(plc.c, layout, flipPositionsThisPage);
     const rEff = plc.r;
@@ -442,10 +448,12 @@ async function createCoverPage(
     drawIndividualCrops(page, cellCenterX, cellCenterY, cutWpt_i, cutHpt_i, 0.0625, 0.125, 0.5, isLeftEdge, isRightEdge, isBottomEdge, isTopEdge, layout.gapHpt, layout.gapVpt);
   }
 
-  // Artwork
+  // Artwork (only where present)
   for (const plc of placements) {
+    if (plc.itemIdx === null) continue;
     const asset = itemAssets[plc.itemIdx];
-    if (pageIndex >= asset.pageCount) continue;
+    if (!asset || pageIndex >= asset.pageCount) continue;
+
     const embeddedPages = perItemEmbeddedPages.get(asset.it.id as number)!;
     const it = asset.it;
 
@@ -466,7 +474,6 @@ async function createCoverPage(
 
     const rotDeg = rotationForPage(it, rEff, cEff, flipPositionsThisPage);
 
-    // Invert X shift for odd pages (pre-rotation)
     const inputShiftX = flipPositionsThisPage ? -(+it.imageShiftX || 0) : (+it.imageShiftX || 0);
     const { sx, sy } = preRotationShiftFor(rotDeg, inputShiftX, +it.imageShiftY);
 
@@ -477,9 +484,11 @@ async function createCoverPage(
     page.drawPage(ep, { x, y, width: placeW, height: placeH, rotate: degrees(rotDeg) });
   }
 
-  // Overlays
+  // Lavender overlays (only for real items)
   for (const plc of placements) {
+    if (plc.itemIdx === null) continue;
     const it = orderItems[plc.itemIdx];
+
     const cutWpt_i = pt(+it.cutWidthInches || 0);
     const cutHpt_i = pt(+it.cutHeightInches || 0);
 
@@ -503,24 +512,23 @@ const IN_ART_BARCODE_DEFAULT_W_IN = 1.00;
 const IN_ART_BARCODE_DEFAULT_H_IN = 0.25;
 
 /**
- * Draw an in-art AutoShip barcode on the last production sheet.
- * X/Y are in inches from the CUT-BOX lower-left in *art space* (unrotated).
- * We rotate that intended position about the CUT center by rotDeg so the
- * barcode stays in the same place on the artwork no matter the placement rotation.
+ * Draw an in-art AutoShip barcode on a specific artwork page.
+ * Caller decides if we should draw on the current page (shouldDraw).
+ * If bwip-js isn't available, a text fallback is used.
  */
-async function drawInArtBarcodeOnLastSheet(
+async function drawInArtBarcodeAtTargetPage(
   page: any,
   outDoc: PDFDocument,
   it: any,
-  isLastProductionSheet: boolean,
+  shouldDraw: boolean,
   rotDeg: number,
-  x0: number, y0: number,             // pre-rotation artwork bottom-left (PLACED area)
+  x0: number, y0: number,             // pre-rotation artwork bottom-left in sheet coords
   cutWpt: number, cutHpt: number,     // cut size in pts
   bleedWpt: number, bleedHpt: number, // bleed size in pts (or = cut)
   barcodeCache: Map<string, any>,
   font: any
 ) {
-  if (!isLastProductionSheet) return;
+  if (!shouldDraw) return;
   if (!it?.includeAutoShipBarcodeInArtOnLastSheet) return;
 
   // Cut-box offset inside placed area (if bleed is present, cut sits centered inside bleed)
@@ -561,13 +569,12 @@ async function drawInArtBarcodeOnLastSheet(
   }
 
   // CUT center in sheet coords
-  const cutLLx = x0 + cutOffX;
-  const cutLLy = y0 + cutOffY;
+  const cutLLx = x0 + Math.max(0, (bleedWpt - cutWpt) / 2);
+  const cutLLy = y0 + Math.max(0, (bleedHpt - cutHpt) / 2);
   const cutCx  = cutLLx + cutWpt / 2;
   const cutCy  = cutLLy + cutHpt / 2;
 
   // Intended *center* of the barcode in unrotated (art-space) coords:
-  // Start at CUT LL, add user offsets, then add half the barcode size
   const centerX0 = cutLLx + inXpt + w / 2;
   const centerY0 = cutLLy + inYpt + h / 2;
 
@@ -580,7 +587,6 @@ async function drawInArtBarcodeOnLastSheet(
   const centerY = cutCy + (vx * sinT + vy * cosT);
 
   // Convert center -> bottom-left draw point for a rectangle rotated by rotDeg
-  // bottom-left = center - R * (w/2, h/2)
   const halfWx = (w / 2) * cosT - (h / 2) * sinT;
   const halfWy = (w / 2) * sinT + (h / 2) * cosT;
   const drawX = centerX - halfWx;
@@ -593,14 +599,12 @@ async function drawInArtBarcodeOnLastSheet(
 
   // ---- Text fallback if bwip-js not present ----
   const text = `${it.orderId}-${it.id}`;
-  // Fit text to target box width (unrotated width constraint in art-space); conservative fit
   let size = 8;
   const maxWForText = targetW;
   while (size > 5 && font.widthOfTextAtSize(text, size) > maxWForText) size -= 0.5;
   const tw = font.widthOfTextAtSize(text, size);
   const th = size;
 
-  // Recompute using text box w/h
   const centerX0_txt = cutLLx + inXpt + tw / 2;
   const centerY0_txt = cutLLy + inYpt + th / 2;
   const vx2 = centerX0_txt - cutCx;
@@ -654,6 +658,15 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     const orderItems: any[] = payload?.orderItems || [];
     if (!orderItems.length) return job.fail('No orderItems in payload');
 
+    // NEW: respect requiredPositions by padding with blanks up to that count
+    const requiredCount = Math.max(orderItems.length, +(payload?.requiredPositions || 0) || orderItems.length);
+    if (payload?.requiredPositions) {
+      await job.log(
+        LogLevel.Info,
+        `requiredPositions present: ${payload.requiredPositions}; will impose ${requiredCount} positions (${orderItems.length} item(s) + ${Math.max(0, requiredCount - orderItems.length)} blank).`
+      );
+    }
+
     // ---- Diagnostics ----
     const maxCutWIn = Math.max(...orderItems.map(it => +it.cutWidthInches || 0));
     const maxCutHIn = Math.max(...orderItems.map(it => +it.cutHeightInches || 0));
@@ -686,8 +699,8 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     );
     await job.log(LogLevel.Info, `Outer sheet margins set to 0.125".`);
 
-    const layout = planLayout(sheetWIn, sheetHIn, orderItems);
-    if (!layout) return job.fail(`Items cannot fit on ${sheetWIn}x${sheetHIn} (${actualOrientation}) with current gaps and 0.125" margins`);
+    const layout = planLayout(sheetWIn, sheetHIn, orderItems, requiredCount);
+    if (!layout) return job.fail(`Items/positions cannot fit on ${sheetWIn}x${sheetHIn} (${actualOrientation}) with current gaps and 0.125" margins`);
 
     await job.log(LogLevel.Info, `Impose ${layout.cols}x${layout.rows} on ${layout.sheetWIn}x${layout.sheetHIn} (${layout.orientation}). Empty cells: ${layout.waste}`);
 
@@ -731,12 +744,14 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     }
     for (const asset of itemAssets) await ensureEmbeddedPagesForItem(asset);
 
-    // placements
-    const placements: any[] = [];
+    // placements: fill up to requiredCount; null itemIdx means BLANK
+    const placements: Array<{ r:number; c:number; itemIdx: number|null }> = [];
     for (let r = 0; r < layout.rows; r++) {
       for (let c = 0; c < layout.cols; c++) {
         const idx = r * layout.cols + c;
-        if (idx < orderItems.length) placements.push({ r, c, itemIdx: idx });
+        if (idx < requiredCount) {
+          placements.push({ r, c, itemIdx: (idx < orderItems.length ? idx : null) });
+        }
       }
     }
 
@@ -749,10 +764,14 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
       await job.log(LogLevel.Info, 'Back-side pages (odd indices) will mirror positions horizontally, invert rotations (add 180°), and invert X shift.');
     }
 
+    // Defaults used for blank crop boxes
+    const defaultCutWpt = pt(maxCutWIn);
+    const defaultCutHpt = pt(maxCutHIn);
+
     if (numCoverPages >= 1)
-      await createCoverPage(outDoc, layout, orderItems, itemAssets, perItemEmbeddedPages, placements, 0, font, boldFont, /*flipPositionsThisPage=*/false);
+      await createCoverPage(outDoc, layout, orderItems, itemAssets, perItemEmbeddedPages, placements, 0, font, boldFont, /*flip*/ false, defaultCutWpt, defaultCutHpt);
     if (numCoverPages === 2)
-      await createCoverPage(outDoc, layout, orderItems, itemAssets, perItemEmbeddedPages, placements, 1, font, boldFont, /*flipPositionsThisPage=*/true);
+      await createCoverPage(outDoc, layout, orderItems, itemAssets, perItemEmbeddedPages, placements, 1, font, boldFont, /*flip*/ true,  defaultCutWpt, defaultCutHpt);
 
     // Cache for per-item barcode images
     const barcodeCache: Map<string, any> = new Map();
@@ -762,11 +781,11 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
       const page = outDoc.addPage([sheetWpt, sheetHpt]);
       const flipPositionsThisPage = anyBackInks && (p % 2 === 1);
 
-      // Crops
+      // Crops (for ALL placements, including blanks)
       for (const plc of placements) {
-        const it = orderItems[plc.itemIdx];
-        const cutWpt_i = pt(+it.cutWidthInches || 0);
-        const cutHpt_i = pt(+it.cutHeightInches || 0);
+        const hasItem = plc.itemIdx !== null;
+        const cutWpt_i = hasItem ? pt(+orderItems[plc.itemIdx!].cutWidthInches || 0) : defaultCutWpt;
+        const cutHpt_i = hasItem ? pt(+orderItems[plc.itemIdx!].cutHeightInches || 0) : defaultCutHpt;
 
         const cEff = effectiveCol(plc.c, layout, flipPositionsThisPage);
         const rEff = plc.r;
@@ -780,8 +799,10 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
         drawIndividualCrops(page, cellCenterX, cellCenterY, cutWpt_i, cutHpt_i, 0.0625, 0.125, 0.5, isLeftEdge, isRightEdge, isBottomEdge, isTopEdge, layout.gapHpt, layout.gapVpt);
       }
 
-      // Artwork + Bugs
+      // Artwork + Bugs + In-art barcode (ONLY for non-blank placements)
       for (const plc of placements) {
+        if (plc.itemIdx === null) continue;
+
         const asset = itemAssets[plc.itemIdx];
         if (p >= asset.pageCount) continue;
 
@@ -818,13 +839,18 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
 
         await drawGutterBug(page, outDoc, it, layout, rEff, cEff, placeW, placeH, sheetWpt, sheetHpt, barcodeCache, font);
 
-        // >>> ADD THIS: draw in-art barcode on LAST production sheet <<<
-        const isLastProductionSheet = (p === maxPages - 1);
-        await drawInArtBarcodeOnLastSheet(
+        // Draw in-art barcode on requested page (inArtBarcodePage 1-based); 0 => last page of this item's PDF
+        const cfgPage = Math.floor(+it.inArtBarcodePage || 0);
+        let targetIdx = (cfgPage > 0) ? (cfgPage - 1) : (asset.pageCount - 1);
+        // keep within this item's bounds
+        targetIdx = clamp(targetIdx, 0, asset.pageCount - 1);
+        const shouldDraw = (p === targetIdx);
+
+        await drawInArtBarcodeAtTargetPage(
           page,
           outDoc,
           it,
-          isLastProductionSheet,
+          shouldDraw,
           rotDeg,
           x0, y0,
           cutWpt_i, cutHpt_i,
@@ -832,6 +858,7 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
           barcodeCache,
           font
         );
+
       }
 
     }

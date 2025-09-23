@@ -332,22 +332,22 @@ function createCoverPage(
   }
 }
 
-/* ---------- In-art AutoShip barcode (last sheet only) ---------- */
+/* ---------- In-art AutoShip barcode (targeted page) ---------- */
 
 // Default target size (clamped to remaining cut area from the given X/Y)
-const IN_ART_BARCODE_DEFAULT_W_IN = 1.25;
-const IN_ART_BARCODE_DEFAULT_H_IN = 0.50;
+const IN_ART_BARCODE_DEFAULT_W_IN = 1.00;
+const IN_ART_BARCODE_DEFAULT_H_IN = 0.25;
 
 /**
- * Draw an in-art AutoShip barcode on the last production sheet.
- * X/Y are inches from CUT lower-left in art-space (unrotated).
- * The position is rotated around the CUT center by rotDeg so it stays consistent.
+ * Draw an in-art AutoShip barcode on a specific artwork page.
+ * Caller passes `shouldDraw` for the current artwork page index.
+ * Uses bwip-js if available; otherwise falls back to text.
  */
-async function drawInArtBarcodeOnLastSheet(
+async function drawInArtBarcodeAtTargetPage(
   page: any,
   outDoc: PDFDocument,
   opts: { enabled:boolean, xIn:number, yIn:number, orderId:string, lineId:string },
-  isLastProductionSheet: boolean,
+  shouldDraw: boolean,
   rotDeg: number,
   x0: number, y0: number,             // pre-rotation placed bottom-left (bleed or cut)
   cutWpt: number, cutHpt: number,     // cut size (pts)
@@ -355,7 +355,7 @@ async function drawInArtBarcodeOnLastSheet(
   barcodeCache: Map<string, any>,
   font: any
 ) {
-  if (!isLastProductionSheet) return;
+  if (!shouldDraw) return;
   if (!opts.enabled) return;
 
   // Cut-box lower-left inside the placed area
@@ -365,13 +365,13 @@ async function drawInArtBarcodeOnLastSheet(
   const userX = Math.max(0, pt(opts.xIn || 0));
   const userY = Math.max(0, pt(opts.yIn || 0));
 
-  // Caps so we never exceed cut area (0° case); safe for 180° as well
+  // Target box (clamped so we never exceed the cut area in the 0° case)
   const capW = Math.max(2, cutWpt - userX);
   const capH = Math.max(2, cutHpt - userY);
   const targetW = Math.min(pt(IN_ART_BARCODE_DEFAULT_W_IN), capW);
   const targetH = Math.min(pt(IN_ART_BARCODE_DEFAULT_H_IN), capH);
 
-  // Barcode image (horizontal); rotate with art by rotDeg
+  // Barcode image (horizontal); rotate with artwork by rotDeg
   const cacheKey = `${opts.orderId}-${opts.lineId}-INART-H`;
   let img = barcodeCache.get(cacheKey);
   if (!img) {
@@ -379,6 +379,7 @@ async function drawInArtBarcodeOnLastSheet(
     if (bytes) { img = await outDoc.embedPng(bytes); barcodeCache.set(cacheKey, img); }
   }
 
+  // Compute final (w,h); fall back to text if needed
   let w = targetW, h = targetH, useTextFallback = !img;
   if (img) {
     const iw = img.width, ih = img.height;
@@ -386,24 +387,24 @@ async function drawInArtBarcodeOnLastSheet(
     w = iw * scale; h = ih * scale;
   }
 
-  // Cut center in sheet coords
+  // Cut center
   const cutLLx = x0 + cutOffX;
   const cutLLy = y0 + cutOffY;
   const cutCx  = cutLLx + cutWpt / 2;
   const cutCy  = cutLLy + cutHpt / 2;
 
-  // Intended barcode center in art space (unrotated)
+  // Intended center in unrotated art-space
   const centerX0 = cutLLx + userX + w / 2;
   const centerY0 = cutLLy + userY + h / 2;
 
-  // Rotate that center around the CUT center by rotDeg
+  // Rotate around cut center by rotDeg
   const theta = deg2rad(rotDeg);
   const cosT = Math.cos(theta), sinT = Math.sin(theta);
   const vx = centerX0 - cutCx, vy = centerY0 - cutCy;
   const centerX = cutCx + (vx * cosT - vy * sinT);
   const centerY = cutCy + (vx * sinT + vy * cosT);
 
-  // Convert center -> bottom-left draw point for a rectangle rotated by rotDeg
+  // Convert center -> bottom-left for rotated rect
   const halfWx = (w / 2) * cosT - (h / 2) * sinT;
   const halfWy = (w / 2) * sinT + (h / 2) * cosT;
   const drawX = centerX - halfWx;
@@ -479,10 +480,12 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     const bugPosition       = (await pd('bugPosition')) || 'Inside';
     const localArtworkPath  = (await pd('localArtworkPath')) || '';
 
-    // NEW: in-art barcode private data
+    // In-art barcode private data (page, enable, position)
     const includeInArtBarcode = ((await pd('includeAutoShipBarcodeInArtOnLastSheet')) === 'true') || ((await pd('includeAutoShipBarcodeInArtOnLastSheet')) === true);
     const inArtBarcodeXIn     = +(await pd('inArtBarcodeX')) || 0;
     const inArtBarcodeYIn     = +(await pd('inArtBarcodeY')) || 0;
+    // NEW: which artwork page to place the in-art barcode on (1-based; 0 => last)
+    const inArtBarcodePageRaw = +(await pd('inArtBarcodePage')) || 0;
 
     const inksBack = +((await pd('inksBack')) || 0);
     const numCoverPages = includeCoverSheet ? (inksBack===0 ? 1 : 2) : 0;
@@ -519,6 +522,12 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     const pageCount = srcDoc.getPageCount();
     if (!pageCount) return job.fail('Source PDF has 0 pages');
 
+    // NEW: resolve target artwork page (0-based)
+    let targetArtIndex = (inArtBarcodePageRaw > 0) ? (inArtBarcodePageRaw - 1) : (pageCount - 1);
+    if (targetArtIndex < 0 || targetArtIndex >= pageCount) {
+      targetArtIndex = Math.max(0, Math.min(pageCount - 1, targetArtIndex));
+    }
+
     const sheetSize:[number,number] = [sheetWpt, sheetHpt];
     const perSheet = cols*rows;
     const font = await outDoc.embedFont(StandardFonts.Helvetica);
@@ -533,7 +542,7 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
 
     await job.log(
       LogLevel.Info,
-      `Single impose: sheet=${sheetW}x${sheetH}", cut=${cutW}x${cutH}", bleed=${bleedW}x${bleedH}", cols=${cols}, rows=${rows}, gaps H=${gapH} V=${gapV}, coverPages=${numCoverPages}, bug=${includeGutterBug?'on':'off'} (${bugPosition}, barcode=${includeBarcode?'on':'off'}), shift=(${imageShiftXIn},${imageShiftYIn})in; odd sheets: X-shift inverted; rotation ${willInvertRotationOnBack?'inverted (+180°)':'unchanged'}; in-art=${includeInArtBarcode?'on':'off'} at (${inArtBarcodeXIn},${inArtBarcodeYIn})in`
+      `Single impose: sheet=${sheetW}x${sheetH}", cut=${cutW}x${cutH}", bleed=${bleedW}x${bleedH}", cols=${cols}, rows=${rows}, gaps H=${gapH} V=${gapV}, coverPages=${numCoverPages}, bug=${includeGutterBug?'on':'off'} (${bugPosition}, barcode=${includeBarcode?'on':'off'}), shift=(${imageShiftXIn},${imageShiftYIn})in; odd sheets: X-shift inverted; rotation ${willInvertRotationOnBack?'inverted (+180°)':'unchanged'}; in-art=${includeInArtBarcode?'on':'off'} at (${inArtBarcodeXIn},${inArtBarcodeYIn})in, inArtPage=${inArtBarcodePageRaw>0?inArtBarcodePageRaw:'last'}`
     );
 
     // embed pages
@@ -542,10 +551,6 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
 
     // track output sheet index (0-based) to detect odd sheets for duplex
     let outSheetIndex = 0;
-
-    // -------- production sheet counting (for "last sheet") --------
-    const totalProductionSheets = useRepeat ? embedded.length : Math.ceil(embedded.length / perSheet);
-    let prodSheetIndex = 0;
 
     // ---- cover (no bugs; no in-art) ----
     if (numCoverPages>=1){
@@ -577,10 +582,10 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     const placeOne = async (
       page:any, ep:any, r:number, c:number,
       invertX:boolean, invertRot:boolean,
-      isLastProductionSheet:boolean
+      artIdx:number                    // which artwork page is being placed
     )=>{
       let rot = computeCellRotation(artRotationMode, rotateFirstCR, r, c);
-      if (invertRot) rot = (rot + 180) % 360;          // invert rotation only when allowed
+      if (invertRot) rot = (rot + 180) % 360;
 
       const cx = offX + c*(cutWpt+gapHpt) + cutWpt/2;
       const cy = offY + r*(cutHpt+gapVpt) + cutHpt/2;
@@ -606,11 +611,12 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
         barcodeCache, font
       );
 
-      // ---- in-art AutoShip barcode on last production sheet ----
-      await drawInArtBarcodeOnLastSheet(
+      // in-art barcode on the requested artwork page only
+      const shouldDraw = (artIdx === targetArtIndex);
+      await drawInArtBarcodeAtTargetPage(
         page, outDoc,
         { enabled: includeInArtBarcode, xIn: inArtBarcodeXIn, yIn: inArtBarcodeYIn, orderId, lineId },
-        isLastProductionSheet,
+        shouldDraw,
         rot,
         x0, y0,
         cutWpt, cutHpt,
@@ -631,16 +637,13 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
           drawIndividualCrops(page, cx, cy, cutWpt, cutHpt, 0.0625, 0.125, 0.5, c===0, c===cols-1, r===0, r===rows-1, gapHpt, gapVpt);
         }
 
-        const ep = embedded[p];
         const invertThisSheetX   = (inksBack !== 0) && (outSheetIndex % 2 === 1);
         const invertThisSheetRot = (inksBack !== 0) && (outSheetIndex % 2 === 1) && willInvertRotationOnBack;
-        const isLastProductionSheet = (prodSheetIndex === totalProductionSheets - 1);
 
         for (let r=0;r<rows;r++) for (let c=0;c<cols;c++)
-          await placeOne(page, ep, r, c, invertThisSheetX, invertThisSheetRot, isLastProductionSheet);
+          await placeOne(page, embedded[p], r, c, invertThisSheetX, invertThisSheetRot, /*artIdx*/ p);
 
         outSheetIndex++;
-        prodSheetIndex++;
       }
     } else if (impositionCutAndStack) {
       return job.fail('Cut and stack imposition not yet implemented');
@@ -660,19 +663,17 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
 
         const invertThisSheetX   = (inksBack !== 0) && (outSheetIndex % 2 === 1);
         const invertThisSheetRot = (inksBack !== 0) && (outSheetIndex % 2 === 1) && willInvertRotationOnBack;
-        const isLastProductionSheet = (prodSheetIndex === totalProductionSheets - 1);
 
         placed = placed - (placed % per);
         for (let r=0;r<rows;r++) for (let c=0;c<cols;c++){
           const idx = placed % embedded.length;
           const ep = embedded[idx];
-          await placeOne(page, ep, r, c, invertThisSheetX, invertThisSheetRot, isLastProductionSheet);
+          await placeOne(page, ep, r, c, invertThisSheetX, invertThisSheetRot, /*artIdx*/ idx);
           placed++;
           if (placed>=embedded.length && (placed%per)===0) break;
         }
 
         outSheetIndex++;
-        prodSheetIndex++;
       }
     }
 
