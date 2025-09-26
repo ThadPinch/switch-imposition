@@ -26,6 +26,8 @@ type Layout = {
   orientation: 'portrait' | 'landscape';
 };
 
+type BindingEdge = 'Left' | 'Right' | 'Top' | 'Bottom';
+
 function gridFit(availW: number, availH: number, cellW: number, cellH: number, gapH: number, gapV: number) {
   const colsMax = Math.max(1, Math.floor((availW + gapH) / (cellW + gapH)));
   const rowsMax = Math.max(1, Math.floor((availH + gapV) / (cellH + gapV)));
@@ -35,7 +37,7 @@ function gridFit(availW: number, availH: number, cellW: number, cellH: number, g
 /** Crops */
 function drawIndividualCrops(
   page: any, centerX: number, centerY: number, cutW: number, cutH: number,
-  gapIn: number = 0.0625, lenIn: number = 0.125, strokePt: number = 0.5,
+  gapIn: number = 0.125, lenIn: number = 0.125, strokePt: number = 0.5,
   isLeftEdge: boolean, isRightEdge: boolean, isBottomEdge: boolean, isTopEdge: boolean,
   gapHorizontal: number, gapVertical: number
 ) {
@@ -153,9 +155,11 @@ function planLayout(
 }
 
 /** 0°/180° rotation rule */
-function computeArtRotationDegrees(it: any, r: number, c: number): number {
+function computeArtRotationDegrees(it: any, r: number, c: number, pageIndex: number): number {
   const mode = String(it.artRotation ?? 'None').trim().toLowerCase();
   const startRot = !!it.rotateFirstColumnOrRow;
+  
+  if (mode === 'evenpages')    return (pageIndex % 2 === 1) ? 180 : 0;  // 0-indexed, so odd indices = even pages
   if (mode === 'rows')         return ((r % 2 === 0) ? startRot : !startRot) ? 180 : 0;
   if (mode.startsWith('col'))  return ((c % 2 === 0) ? startRot : !startRot) ? 180 : 0;
   return 0;
@@ -179,15 +183,79 @@ function preRotationShiftFor(deg: number, sxIn: number, syIn: number) {
   return { sx, sy };
 }
 
-/** For duplex: flip column on every odd sheet page so backs align with fronts */
-function effectiveCol(c: number, layout: Layout, flipPositionsThisPage: boolean) {
-  return flipPositionsThisPage ? (layout.cols - 1 - c) : c;
+/** 
+ * Apply binding edge position adjustments
+ * For Left/Right edges: flip columns on odd pages (backs)
+ * For Top/Bottom edges: flip rows on odd pages (backs)
+ */
+function getEffectivePosition(
+  r: number, 
+  c: number, 
+  layout: Layout, 
+  bindingEdge: BindingEdge,
+  flipPositionsThisPage: boolean
+): { rEff: number, cEff: number } {
+  let rEff = r;
+  let cEff = c;
+
+  if (!flipPositionsThisPage) {
+    // Front page - no flipping needed
+    return { rEff, cEff };
+  }
+
+  // Back page - apply flipping based on binding edge
+  const edgeNorm = bindingEdge.toLowerCase();
+  
+  if (edgeNorm === 'left' || edgeNorm === 'right') {
+    // Flip columns for left/right binding
+    cEff = layout.cols - 1 - c;
+  } else if (edgeNorm === 'top' || edgeNorm === 'bottom') {
+    // Flip rows for top/bottom binding
+    rEff = layout.rows - 1 - r;
+  }
+
+  return { rEff, cEff };
 }
 
-/** For duplex: also invert rotation on odd pages (add 180°) */
-function rotationForPage(it: any, rEff: number, cEff: number, flipPositionsThisPage: boolean) {
-  let deg = computeArtRotationDegrees(it, rEff, cEff);
+/**
+ * Get the appropriate shift inversions based on binding edge
+ */
+function getShiftAdjustments(
+  bindingEdge: BindingEdge,
+  flipPositionsThisPage: boolean,
+  imageShiftX: number,
+  imageShiftY: number
+): { shiftX: number, shiftY: number } {
+  if (!flipPositionsThisPage) {
+    // Front page - no inversions
+    return { shiftX: imageShiftX || 0, shiftY: imageShiftY || 0 };
+  }
+
+  // Back page - apply inversions based on binding edge
+  const edgeNorm = bindingEdge.toLowerCase();
+  
+  if (edgeNorm === 'left' || edgeNorm === 'right') {
+    // Invert X-shift for left/right binding
+    return { shiftX: -(imageShiftX || 0), shiftY: imageShiftY || 0 };
+  } else if (edgeNorm === 'top' || edgeNorm === 'bottom') {
+    // Invert Y-shift for top/bottom binding
+    return { shiftX: imageShiftX || 0, shiftY: -(imageShiftY || 0) };
+  }
+
+  // Default fallback
+  return { shiftX: imageShiftX || 0, shiftY: imageShiftY || 0 };
+}
+
+/**
+ * Apply 180° rotation for back pages (all binding edges)
+ */
+function rotationForPage(it: any, rEff: number, cEff: number, flipPositionsThisPage: boolean, pageIndex: number) {
+  // First get the base rotation from the artRotation settings
+  let deg = computeArtRotationDegrees(it, rEff, cEff, pageIndex);
+  
+  // Add 180° for all back pages, regardless of binding edge
   if (flipPositionsThisPage) deg = (deg + 180) % 360;
+  
   return deg;
 }
 
@@ -292,7 +360,7 @@ function drawBugText(
     page.drawText(text, { x, y, size, font, color: k });
   } else {
     const x = bx + (bw - size) / 2;
-    const y = by + bh - font.widthOfTextAtSize(text, size); // start near far end; flows “away”
+    const y = by + bh - font.widthOfTextAtSize(text, size); // start near far end; flows "away"
     page.drawText(text, { x, y, size, font, color: k, rotate: degrees(90) });
   }
 }
@@ -425,7 +493,7 @@ async function createCoverPage(
   outDoc: PDFDocument, layout: Layout, orderItems: any[], itemAssets: any[],
   perItemEmbeddedPages: Map<number, any[]>, placements: Array<{r:number;c:number;itemIdx:number|null}>,
   pageIndex: number, font: any, boldFont: any, flipPositionsThisPage: boolean,
-  defaultCutWpt: number, defaultCutHpt: number
+  defaultCutWpt: number, defaultCutHpt: number, bindingEdge: BindingEdge
 ) {
   const sheetWpt = pt(layout.sheetWIn), sheetHpt = pt(layout.sheetHIn);
   const page = outDoc.addPage([sheetWpt, sheetHpt]);
@@ -436,8 +504,8 @@ async function createCoverPage(
     const cutWpt_i = hasItem ? pt(+orderItems[plc.itemIdx!].cutWidthInches || 0) : defaultCutWpt;
     const cutHpt_i = hasItem ? pt(+orderItems[plc.itemIdx!].cutHeightInches || 0) : defaultCutHpt;
 
-    const cEff = effectiveCol(plc.c, layout, flipPositionsThisPage);
-    const rEff = plc.r;
+    // Apply binding edge position adjustments
+    const { rEff, cEff } = getEffectivePosition(plc.r, plc.c, layout, bindingEdge, flipPositionsThisPage);
 
     const cellCenterX = layout.offX + cEff * (layout.cellWpt + layout.gapHpt) + layout.cellWpt / 2;
     const cellCenterY = layout.offY + rEff * (layout.cellHpt + layout.gapVpt) + layout.cellHpt / 2;
@@ -445,7 +513,7 @@ async function createCoverPage(
     const isLeftEdge = cEff === 0, isRightEdge = cEff === layout.cols - 1;
     const isBottomEdge = rEff === 0, isTopEdge = rEff === layout.rows - 1;
 
-    drawIndividualCrops(page, cellCenterX, cellCenterY, cutWpt_i, cutHpt_i, 0.0625, 0.125, 0.5, isLeftEdge, isRightEdge, isBottomEdge, isTopEdge, layout.gapHpt, layout.gapVpt);
+    drawIndividualCrops(page, cellCenterX, cellCenterY, cutWpt_i, cutHpt_i, 0.25, 0.125, 0.5, isLeftEdge, isRightEdge, isBottomEdge, isTopEdge, layout.gapHpt, layout.gapVpt);
   }
 
   // Artwork (only where present)
@@ -466,16 +534,17 @@ async function createCoverPage(
 
     const ep = embeddedPages[Math.min(pageIndex, embeddedPages.length - 1)];
 
-    const cEff = effectiveCol(plc.c, layout, flipPositionsThisPage);
-    const rEff = plc.r;
+    // Apply binding edge position adjustments
+    const { rEff, cEff } = getEffectivePosition(plc.r, plc.c, layout, bindingEdge, flipPositionsThisPage);
 
     const cellCenterX = layout.offX + cEff * (layout.cellWpt + layout.gapHpt) + layout.cellWpt / 2;
     const cellCenterY = layout.offY + rEff * (layout.cellHpt + layout.gapVpt) + layout.cellHpt / 2;
 
-    const rotDeg = rotationForPage(it, rEff, cEff, flipPositionsThisPage);
+    const rotDeg = rotationForPage(it, rEff, cEff, flipPositionsThisPage, pageIndex);
 
-    const inputShiftX = flipPositionsThisPage ? -(+it.imageShiftX || 0) : (+it.imageShiftX || 0);
-    const { sx, sy } = preRotationShiftFor(rotDeg, inputShiftX, +it.imageShiftY);
+    // Get shift adjustments based on binding edge
+    const { shiftX, shiftY } = getShiftAdjustments(bindingEdge, flipPositionsThisPage, +it.imageShiftX, +it.imageShiftY);
+    const { sx, sy } = preRotationShiftFor(rotDeg, shiftX, shiftY);
 
     const x0 = cellCenterX - placeW / 2 + sx;
     const y0 = cellCenterY - placeH / 2 + sy;
@@ -492,8 +561,8 @@ async function createCoverPage(
     const cutWpt_i = pt(+it.cutWidthInches || 0);
     const cutHpt_i = pt(+it.cutHeightInches || 0);
 
-    const cEff = effectiveCol(plc.c, layout, flipPositionsThisPage);
-    const rEff = plc.r;
+    // Apply binding edge position adjustments
+    const { rEff, cEff } = getEffectivePosition(plc.r, plc.c, layout, bindingEdge, flipPositionsThisPage);
 
     const cellCenterX = layout.offX + cEff * (layout.cellWpt + layout.gapHpt) + layout.cellWpt / 2;
     const cellCenterY = layout.offY + rEff * (layout.cellHpt + layout.gapVpt) + layout.cellHpt / 2;
@@ -658,6 +727,10 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     const orderItems: any[] = payload?.orderItems || [];
     if (!orderItems.length) return job.fail('No orderItems in payload');
 
+    // Extract binding edge (default to Left if not specified)
+    const bindingEdge: BindingEdge = (orderItems[0]?.bindingEdge as BindingEdge) || 'Left';
+    await job.log(LogLevel.Info, `Binding edge: ${bindingEdge}`);
+
     // NEW: respect requiredPositions by padding with blanks up to that count
     const requiredCount = Math.max(orderItems.length, +(payload?.requiredPositions || 0) || orderItems.length);
     if (payload?.requiredPositions) {
@@ -760,8 +833,14 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     const anyBackInks = orderItems.some(it => (+it.inksBack || 0) !== 0);
     const numCoverPages = includeCover ? (anyBackInks ? 2 : 1) : 0;
     await job.log(LogLevel.Info, `Cover pages: ${numCoverPages} (${includeCover ? 'includeCoverSheet=true' : 'disabled'}; inksBack ${anyBackInks ? 'non-zero' : 'zero'})`);
+    
     if (anyBackInks) {
-      await job.log(LogLevel.Info, 'Back-side pages (odd indices) will mirror positions horizontally, invert rotations (add 180°), and invert X shift.');
+      const edgeNorm = bindingEdge.toLowerCase();
+      if (edgeNorm === 'left' || edgeNorm === 'right') {
+        await job.log(LogLevel.Info, `${bindingEdge} binding: Back pages will flip columns horizontally, add 180° rotation, and invert X shift.`);
+      } else if (edgeNorm === 'top' || edgeNorm === 'bottom') {
+        await job.log(LogLevel.Info, `${bindingEdge} binding: Back pages will flip rows vertically, add 180° rotation, and invert Y shift.`);
+      }
     }
 
     // Defaults used for blank crop boxes
@@ -769,9 +848,9 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     const defaultCutHpt = pt(maxCutHIn);
 
     if (numCoverPages >= 1)
-      await createCoverPage(outDoc, layout, orderItems, itemAssets, perItemEmbeddedPages, placements, 0, font, boldFont, /*flip*/ false, defaultCutWpt, defaultCutHpt);
+      await createCoverPage(outDoc, layout, orderItems, itemAssets, perItemEmbeddedPages, placements, 0, font, boldFont, /*flip*/ false, defaultCutWpt, defaultCutHpt, bindingEdge);
     if (numCoverPages === 2)
-      await createCoverPage(outDoc, layout, orderItems, itemAssets, perItemEmbeddedPages, placements, 1, font, boldFont, /*flip*/ true,  defaultCutWpt, defaultCutHpt);
+      await createCoverPage(outDoc, layout, orderItems, itemAssets, perItemEmbeddedPages, placements, 1, font, boldFont, /*flip*/ true,  defaultCutWpt, defaultCutHpt, bindingEdge);
 
     // Cache for per-item barcode images
     const barcodeCache: Map<string, any> = new Map();
@@ -787,8 +866,8 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
         const cutWpt_i = hasItem ? pt(+orderItems[plc.itemIdx!].cutWidthInches || 0) : defaultCutWpt;
         const cutHpt_i = hasItem ? pt(+orderItems[plc.itemIdx!].cutHeightInches || 0) : defaultCutHpt;
 
-        const cEff = effectiveCol(plc.c, layout, flipPositionsThisPage);
-        const rEff = plc.r;
+        // Apply binding edge position adjustments
+        const { rEff, cEff } = getEffectivePosition(plc.r, plc.c, layout, bindingEdge, flipPositionsThisPage);
 
         const cellCenterX = layout.offX + cEff * (layout.cellWpt + layout.gapHpt) + layout.cellWpt / 2;
         const cellCenterY = layout.offY + rEff * (layout.cellHpt + layout.gapVpt) + layout.cellHpt / 2;
@@ -796,7 +875,7 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
         const isLeftEdge = cEff === 0, isRightEdge = cEff === layout.cols - 1;
         const isBottomEdge = rEff === 0, isTopEdge = rEff === layout.rows - 1;
 
-        drawIndividualCrops(page, cellCenterX, cellCenterY, cutWpt_i, cutHpt_i, 0.0625, 0.125, 0.5, isLeftEdge, isRightEdge, isBottomEdge, isTopEdge, layout.gapHpt, layout.gapVpt);
+        drawIndividualCrops(page, cellCenterX, cellCenterY, cutWpt_i, cutHpt_i, 0.25, 0.125, 0.5, isLeftEdge, isRightEdge, isBottomEdge, isTopEdge, layout.gapHpt, layout.gapVpt);
       }
 
       // Artwork + Bugs + In-art barcode (ONLY for non-blank placements)
@@ -819,17 +898,18 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
 
         const ep = embeddedPages[Math.min(p, embeddedPages.length - 1)];
 
-        const cEff = effectiveCol(plc.c, layout, flipPositionsThisPage);
-        const rEff = plc.r;
+        // Apply binding edge position adjustments FIRST
+        const { rEff, cEff } = getEffectivePosition(plc.r, plc.c, layout, bindingEdge, flipPositionsThisPage);
 
         const cellCenterX = layout.offX + cEff * (layout.cellWpt + layout.gapHpt) + layout.cellWpt / 2;
         const cellCenterY = layout.offY + rEff * (layout.cellHpt + layout.gapVpt) + layout.cellHpt / 2;
 
-        const rotDeg = rotationForPage(it, rEff, cEff, flipPositionsThisPage);
+        // Then apply rotation after position is determined
+        const rotDeg = rotationForPage(it, rEff, cEff, flipPositionsThisPage, p);
 
-        // Invert X shift for odd pages (pre-rotation)
-        const inputShiftX = flipPositionsThisPage ? -(+it.imageShiftX || 0) : (+it.imageShiftX || 0);
-        const { sx, sy } = preRotationShiftFor(rotDeg, inputShiftX, +it.imageShiftY);
+        // Get shift adjustments based on binding edge
+        const { shiftX, shiftY } = getShiftAdjustments(bindingEdge, flipPositionsThisPage, +it.imageShiftX, +it.imageShiftY);
+        const { sx, sy } = preRotationShiftFor(rotDeg, shiftX, shiftY);
 
         const x0 = cellCenterX - placeW / 2 + sx;
         const y0 = cellCenterY - placeH / 2 + sy;
