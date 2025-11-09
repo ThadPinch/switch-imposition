@@ -1,14 +1,21 @@
 /// <reference types="switch-scripting" />
 // @ts-nocheck
+
 import { PDFDocument, degrees, rgb, StandardFonts } from 'pdf-lib';
 import * as fs from 'fs/promises';
 import * as http from 'http';
 
 // OPTIONAL: barcode (install with: npm i bwip-js)
 let bwipjs: any = null;
-try { bwipjs = require('bwip-js'); } catch { /* ok: fallback to text-only bug */ }
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  bwipjs = require('bwip-js');
+} catch {
+  /* ok: fallback to text-only bug */
+}
 
 /* ---------- helpers ---------- */
+
 const PT = 72, pt = (inch: number) => inch * PT;
 
 type Layout = {
@@ -36,10 +43,20 @@ function gridFit(availW: number, availH: number, cellW: number, cellH: number, g
 
 /** Crops */
 function drawIndividualCrops(
-  page: any, centerX: number, centerY: number, cutW: number, cutH: number,
-  gapIn: number = 0.125, lenIn: number = 0.125, strokePt: number = 0.5,
-  isLeftEdge: boolean, isRightEdge: boolean, isBottomEdge: boolean, isTopEdge: boolean,
-  gapHorizontal: number, gapVertical: number
+  page: any,
+  centerX: number,
+  centerY: number,
+  cutW: number,
+  cutH: number,
+  gapIn: number = 0.125,
+  lenIn: number = 0.125,
+  strokePt: number = 0.5,
+  isLeftEdge: boolean,
+  isRightEdge: boolean,
+  isBottomEdge: boolean,
+  isTopEdge: boolean,
+  gapHorizontal: number,
+  gapVertical: number
 ) {
   const off = pt(gapIn);
   const perimeterLen = pt(lenIn);
@@ -47,33 +64,40 @@ function drawIndividualCrops(
   const maxInteriorLenV = Math.max(0, (gapVertical - off * 2) * 0.4);
   const interiorLenH = Math.min(pt(0.03125), maxInteriorLenH);
   const interiorLenV = Math.min(pt(0.03125), maxInteriorLenV);
-  const k = rgb(0,0,0);
 
+  const k = rgb(0, 0, 0);
   const halfW = cutW / 2, halfH = cutH / 2;
   const xL = centerX - halfW, xR = centerX + halfW;
   const yB = centerY - halfH, yT = centerY + halfH;
 
   const topLen = isTopEdge ? perimeterLen : interiorLenV;
   const leftLen = isLeftEdge ? perimeterLen : interiorLenH;
-  page.drawLine({ start:{x:xL, y:yT + off}, end:{x:xL, y:yT + off + topLen}, thickness: strokePt, color: k });
-  page.drawLine({ start:{x:xL - off - leftLen, y:yT}, end:{x:xL - off, y:yT}, thickness: strokePt, color: k });
+  page.drawLine({ start: { x: xL, y: yT + off }, end: { x: xL, y: yT + off + topLen }, thickness: strokePt, color: k });
+  page.drawLine({ start: { x: xL - off - leftLen, y: yT }, end: { x: xL - off, y: yT }, thickness: strokePt, color: k });
 
   const rightLen = isRightEdge ? perimeterLen : interiorLenH;
-  page.drawLine({ start:{x:xR, y:yT + off}, end:{x:xR, y:yT + off + topLen}, thickness: strokePt, color: k });
-  page.drawLine({ start:{x:xR + off, y:yT}, end:{x:xR + off + rightLen, y:yT}, thickness: strokePt, color: k });
+  page.drawLine({ start: { x: xR, y: yT + off }, end: { x: xR, y: yT + off + topLen }, thickness: strokePt, color: k });
+  page.drawLine({ start: { x: xR + off, y: yT }, end: { x: xR + off + rightLen, y: yT }, thickness: strokePt, color: k });
 
   const bottomLen = isBottomEdge ? perimeterLen : interiorLenV;
-  page.drawLine({ start:{x:xL, y:yB - off}, end:{x:xL, y:yB - off - bottomLen}, thickness: strokePt, color: k });
-  page.drawLine({ start:{x:xL - off - leftLen, y:yB}, end:{x:xL - off, y:yB}, thickness: strokePt, color: k });
+  page.drawLine({ start: { x: xL, y: yB - off }, end: { x: xL, y: yB - off - bottomLen }, thickness: strokePt, color: k });
+  page.drawLine({ start: { x: xL - off - leftLen, y: yB }, end: { x: xL - off, y: yB }, thickness: strokePt, color: k });
 
-  page.drawLine({ start:{x:xR, y:yB - off}, end:{x:xR, y:yB - off - bottomLen}, thickness: strokePt, color: k });
-  page.drawLine({ start:{x:xR + off, y:yB}, end:{x:xR + off + rightLen, y:yB}, thickness: strokePt, color: k });
+  page.drawLine({ start: { x: xR, y: yB - off }, end: { x: xR, y: yB - off - bottomLen }, thickness: strokePt, color: k });
+  page.drawLine({ start: { x: xR + off, y: yB }, end: { x: xR + off + rightLen, y: yB }, thickness: strokePt, color: k });
 }
 
 /** Lavender overlay (cover) */
 function drawLavenderOverlay(
-  page: any, centerX: number, centerY: number, cutW: number, cutH: number,
-  orderId: string, itemId: string, font: any, boldFont: any
+  page: any,
+  centerX: number,
+  centerY: number,
+  cutW: number,
+  cutH: number,
+  orderId: string,
+  itemId: string,
+  font: any,
+  boldFont: any
 ) {
   const halfW = cutW / 2, halfH = cutH / 2;
   const xL = centerX - halfW, yB = centerY - halfH;
@@ -85,18 +109,22 @@ function drawLavenderOverlay(
   const idText = `OrderID: ${orderId}`;
   const itemText = `OrderItemID: ${itemId}`;
   const idSize = 12, itemSize = 12, lh = 14;
+
   const idW = boldFont.widthOfTextAtSize(idText, idSize);
   const itemW = font.widthOfTextAtSize(itemText, itemSize);
 
-  page.drawText(idText,   { x: centerX - idW   / 2, y: centerY + lh / 2,     size: idSize,   font: boldFont, color: white });
-  page.drawText(itemText, { x: centerX - itemW / 2, y: centerY - lh / 2 - 4, size: itemSize, font,          color: white });
+  page.drawText(idText, { x: centerX - idW / 2, y: centerY + lh / 2, size: idSize, font: boldFont, color: white });
+  page.drawText(itemText, { x: centerX - itemW / 2, y: centerY - lh / 2 - 4, size: itemSize, font, color: white });
 }
 
 /** HTTP GET a PDF */
 function httpGetBytes(url: string): Promise<Uint8Array> {
   return new Promise((resolve, reject) => {
     const req = http.get(url, (res) => {
-      if (res.statusCode && res.statusCode >= 400) { reject(new Error(`HTTP ${res.statusCode} for ${url}`)); return; }
+      if (res.statusCode && res.statusCode >= 400) {
+        reject(new Error(`HTTP ${res.statusCode} for ${url}`));
+        return;
+      }
       const chunks: Buffer[] = [];
       res.on('data', (d) => chunks.push(Buffer.isBuffer(d) ? d : Buffer.from(d)));
       res.on('end', () => resolve(new Uint8Array(Buffer.concat(chunks))));
@@ -122,6 +150,7 @@ function planLayout(
   const gapVIn = Math.max(...orderItems.map(it => +it.impositionMarginVertical || 0), 0);
 
   const outerMarginHIn = 0.125, outerMarginVIn = 0.125;
+
   const availWIn = sheetWIn - 2 * outerMarginHIn;
   const availHIn = sheetHIn - 2 * outerMarginVIn;
 
@@ -131,7 +160,10 @@ function planLayout(
 
   let cols = Math.min(colsMax, required);
   let rowsNeeded = Math.ceil(required / cols);
-  while (rowsNeeded > rowsMax && cols > 1) { cols -= 1; rowsNeeded = Math.ceil(required / cols); }
+  while (rowsNeeded > rowsMax && cols > 1) {
+    cols -= 1;
+    rowsNeeded = Math.ceil(required / cols);
+  }
   if (rowsNeeded > rowsMax) return null;
   const rows = rowsNeeded;
 
@@ -151,17 +183,23 @@ function planLayout(
 
   const waste = cols * rows - required;
 
-  return { sheetWIn, sheetHIn, cols, rows, cellWpt, cellHpt, gapHpt, gapVpt, offX, offY, waste, orientation: sheetHIn >= sheetWIn ? 'portrait' : 'landscape' };
+  return {
+    sheetWIn, sheetHIn, cols, rows,
+    cellWpt, cellHpt,
+    gapHpt, gapVpt,
+    offX, offY,
+    waste,
+    orientation: sheetHIn >= sheetWIn ? 'portrait' : 'landscape'
+  };
 }
 
 /** 0°/180° rotation rule */
 function computeArtRotationDegrees(it: any, r: number, c: number, pageIndex: number): number {
   const mode = String(it.artRotation ?? 'None').trim().toLowerCase();
   const startRot = !!it.rotateFirstColumnOrRow;
-  
-  if (mode === 'evenpages')    return (pageIndex % 2 === 1) ? 180 : 0;  // 0-indexed, so odd indices = even pages
-  if (mode === 'rows')         return ((r % 2 === 0) ? startRot : !startRot) ? 180 : 0;
-  if (mode.startsWith('col'))  return ((c % 2 === 0) ? startRot : !startRot) ? 180 : 0;
+  if (mode === 'evenpages') return (pageIndex % 2 === 1) ? 180 : 0; // 0-indexed, so odd indices = even pages
+  if (mode === 'rows') return ((r % 2 === 0) ? startRot : !startRot) ? 180 : 0;
+  if (mode.startsWith('col')) return ((c % 2 === 0) ? startRot : !startRot) ? 180 : 0;
   return 0;
 }
 
@@ -176,36 +214,29 @@ function adjustXYForRotation(x: number, y: number, width: number, height: number
 function preRotationShiftFor(deg: number, sxIn: number, syIn: number) {
   const sx = pt(sxIn || 0), sy = pt(syIn || 0);
   const norm = ((deg % 360) + 360) % 360;
-  if (norm === 0)   return { sx,  sy };
+  if (norm === 0) return { sx, sy };
   if (norm === 180) return { sx: -sx, sy: -sy };
-  if (norm === 90)  return { sx: -sy, sy:  sx };
-  if (norm === 270) return { sx:  sy, sy: -sx };
+  if (norm === 90) return { sx: -sy, sy: sx };
+  if (norm === 270) return { sx: sy, sy: -sx };
   return { sx, sy };
 }
 
-/** 
+/**
  * Apply binding edge position adjustments
  * For Left/Right edges: flip columns on odd pages (backs)
  * For Top/Bottom edges: flip rows on odd pages (backs)
  */
 function getEffectivePosition(
-  r: number, 
-  c: number, 
-  layout: Layout, 
-  bindingEdge: BindingEdge,
-  flipPositionsThisPage: boolean
+  r: number, c: number, layout: Layout, bindingEdge: BindingEdge, flipPositionsThisPage: boolean
 ): { rEff: number, cEff: number } {
   let rEff = r;
   let cEff = c;
-
   if (!flipPositionsThisPage) {
     // Front page - no flipping needed
     return { rEff, cEff };
   }
-
   // Back page - apply flipping based on binding edge
   const edgeNorm = bindingEdge.toLowerCase();
-  
   if (edgeNorm === 'left' || edgeNorm === 'right') {
     // Flip columns for left/right binding
     cEff = layout.cols - 1 - c;
@@ -213,7 +244,6 @@ function getEffectivePosition(
     // Flip rows for top/bottom binding
     rEff = layout.rows - 1 - r;
   }
-
   return { rEff, cEff };
 }
 
@@ -221,19 +251,14 @@ function getEffectivePosition(
  * Get the appropriate shift inversions based on binding edge
  */
 function getShiftAdjustments(
-  bindingEdge: BindingEdge,
-  flipPositionsThisPage: boolean,
-  imageShiftX: number,
-  imageShiftY: number
+  bindingEdge: BindingEdge, flipPositionsThisPage: boolean, imageShiftX: number, imageShiftY: number
 ): { shiftX: number, shiftY: number } {
   if (!flipPositionsThisPage) {
     // Front page - no inversions
     return { shiftX: imageShiftX || 0, shiftY: imageShiftY || 0 };
   }
-
   // Back page - apply inversions based on binding edge
   const edgeNorm = bindingEdge.toLowerCase();
-  
   if (edgeNorm === 'left' || edgeNorm === 'right') {
     // Invert X-shift for left/right binding
     return { shiftX: -(imageShiftX || 0), shiftY: imageShiftY || 0 };
@@ -241,7 +266,6 @@ function getShiftAdjustments(
     // Invert Y-shift for top/bottom binding
     return { shiftX: imageShiftX || 0, shiftY: -(imageShiftY || 0) };
   }
-
   // Default fallback
   return { shiftX: imageShiftX || 0, shiftY: imageShiftY || 0 };
 }
@@ -252,72 +276,84 @@ function getShiftAdjustments(
 function rotationForPage(it: any, rEff: number, cEff: number, flipPositionsThisPage: boolean, pageIndex: number) {
   // First get the base rotation from the artRotation settings
   let deg = computeArtRotationDegrees(it, rEff, cEff, pageIndex);
-  
   // Add 180° for all back pages, regardless of binding edge
   if (flipPositionsThisPage) deg = (deg + 180) % 360;
-  
   return deg;
 }
 
 /* ---------- Gutter Bug ---------- */
 
-type BugSide = 'left'|'right'|'top'|'bottom';
-const BUG_THICKNESS_IN = 0.125;
+type BugSide = 'left' | 'right' | 'top' | 'bottom';
+
+const BUG_THICKNESS_IN = 0.125;     // strip thickness
+const BUG_STANDOFF_IN  = 0.125;     // NEW: desired gap between art edge and bug strip
 
 function availableGapForSide(
   side: BugSide, layout: Layout, r: number, c: number,
-  xL: number, xR: number, yB: number, yT: number,
-  sheetWpt: number, sheetHpt: number
+  xL: number, xR: number, yB: number, yT: number, sheetWpt: number, sheetHpt: number
 ) {
-  if (side === 'left')   return c > 0 ? layout.gapHpt : xL;
-  if (side === 'right')  return c < layout.cols-1 ? layout.gapHpt : (sheetWpt - xR);
+  if (side === 'left') return c > 0 ? layout.gapHpt : xL;
+  if (side === 'right') return c < layout.cols - 1 ? layout.gapHpt : (sheetWpt - xR);
   if (side === 'bottom') return r > 0 ? layout.gapVpt : yB;
-  if (side === 'top')    return r < layout.rows-1 ? layout.gapVpt : (sheetHpt - yT);
+  if (side === 'top') return r < layout.rows - 1 ? layout.gapVpt : (sheetHpt - yT);
   return 0;
 }
 
 function pickBugSide(
   pos: string, layout: Layout, r: number, c: number,
-  xL: number, xR: number, yB: number, yT: number,
-  sheetWpt: number, sheetHpt: number
+  xL: number, xR: number, yB: number, yT: number, sheetWpt: number, sheetHpt: number
 ): BugSide | null {
-  const needPt = pt(BUG_THICKNESS_IN);
+  const thickPt = pt(BUG_THICKNESS_IN);
+  const wantStandOffPt = pt(BUG_STANDOFF_IN);
+
   const norm = String(pos || 'Inside').toLowerCase();
 
   const gaps: Record<BugSide, number> = {
-    left:  availableGapForSide('left', layout, r, c, xL, xR, yB, yT, sheetWpt, sheetHpt),
+    left: availableGapForSide('left', layout, r, c, xL, xR, yB, yT, sheetWpt, sheetHpt),
     right: availableGapForSide('right', layout, r, c, xL, xR, yB, yT, sheetWpt, sheetHpt),
-    bottom:availableGapForSide('bottom', layout, r, c, xL, xR, yB, yT, sheetWpt, sheetHpt),
-    top:   availableGapForSide('top', layout, r, c, xL, xR, yB, yT, sheetWpt, sheetHpt),
+    bottom: availableGapForSide('bottom', layout, r, c, xL, xR, yB, yT, sheetWpt, sheetHpt),
+    top: availableGapForSide('top', layout, r, c, xL, xR, yB, yT, sheetWpt, sheetHpt),
   };
-  const distances: Record<BugSide, number> = { left: xL, right: sheetWpt - xR, bottom: yB, top: sheetHpt - yT };
 
-  function pickWithinAxis(axis: 'h'|'v', inside: boolean): BugSide | null {
-    const candidates: BugSide[] = axis === 'h' ? ['left','right'] : ['bottom','top'];
+  const distances: Record<BugSide, number> = {
+    left: xL, right: sheetWpt - xR, bottom: yB, top: sheetHpt - yT
+  };
+
+  function pickWithinAxis(axis: 'h' | 'v', inside: boolean, needPt: number): BugSide | null {
+    const candidates: BugSide[] = axis === 'h' ? ['left', 'right'] : ['bottom', 'top'];
     const viable = candidates.filter(s => gaps[s] >= needPt);
     if (!viable.length) return null;
-    viable.sort((a,b) => inside ? (distances[b] - distances[a]) : (distances[a] - distances[b]));
+    viable.sort((a, b) => inside ? (distances[b] - distances[a]) : (distances[a] - distances[b]));
     return viable[0] ?? null;
   }
 
+  // Explicit side requested?
   if (norm === 'left' || norm === 'right' || norm === 'top' || norm === 'bottom') {
-    return gaps[norm as BugSide] >= needPt ? (norm as BugSide) : null;
+    return gaps[norm as BugSide] >= (thickPt) ? (norm as BugSide) : null;
   }
 
   const horizMax = Math.max(gaps.left, gaps.right);
-  const vertMax  = Math.max(gaps.top, gaps.bottom);
-  const horizOK = horizMax >= needPt;
-  const vertOK  = vertMax  >= needPt;
-
+  const vertMax = Math.max(gaps.top, gaps.bottom);
+  const horizOK = horizMax >= thickPt;
+  const vertOK = vertMax >= thickPt;
   const inside = norm === 'inside';
-  let pick: BugSide | null = null;
 
+  // Prefer a side with enough room for full standoff; otherwise fall back to just thickness.
+  const needFull = thickPt + wantStandOffPt;
+  const needMin = thickPt;
+
+  let pick: BugSide | null = null;
   if (horizOK && vertOK) {
     const axis = (horizMax >= vertMax) ? 'h' : 'v';
-    pick = pickWithinAxis(axis, inside) ?? pickWithinAxis(axis === 'h' ? 'v' : 'h', inside);
-  } else if (horizOK) pick = pickWithinAxis('h', inside);
-  else if (vertOK)    pick = pickWithinAxis('v', inside);
-
+    pick = pickWithinAxis(axis, inside, needFull)
+        ?? pickWithinAxis(axis === 'h' ? 'v' : 'h', inside, needFull)
+        ?? pickWithinAxis(axis, inside, needMin)
+        ?? pickWithinAxis(axis === 'h' ? 'v' : 'h', inside, needMin);
+  } else if (horizOK) {
+    pick = pickWithinAxis('h', inside, needFull) ?? pickWithinAxis('h', inside, needMin);
+  } else if (vertOK) {
+    pick = pickWithinAxis('v', inside, needFull) ?? pickWithinAxis('v', inside, needMin);
+  }
   return pick;
 }
 
@@ -334,23 +370,25 @@ async function makeBarcodePngBytes(text: string, vertical: boolean): Promise<Uin
       textxalign: 'center',
       backgroundcolor: 'FFFFFF'
     };
-    if (vertical) opts.rotate = 'R';   // 90° right – barcode becomes tall
+    if (vertical) opts.rotate = 'R'; // 90° right – barcode becomes tall
     const buf: Buffer = await bwipjs.toBuffer(opts);
     return new Uint8Array(buf);
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 /** Short text renderer for bug strip (auto-fit; supports vertical) */
 function drawBugText(
   page: any, font: any, text: string,
-  bx: number, by: number, bw: number, bh: number,
-  vertical: boolean, anchorLeft: boolean
+  bx: number, by: number, bw: number, bh: number, vertical: boolean, anchorLeft: boolean
 ) {
   if (!text) return;
-  const k = rgb(0,0,0);
-  const TARGET_PT = 10;
-  const MIN_PT = 6;
+  const k = rgb(0, 0, 0);
+  const TARGET_PT = 10;           // desired 10 pt
+  const MIN_PT = 6;               // allow shrink if needed
   const THICKNESS_OVERSHOOT_PT = 2;
+
   const maxThickness = vertical ? bw : bh;
   const maxAlong = vertical ? bh : bw;
 
@@ -374,20 +412,17 @@ function drawBugText(
 
 /** Draw short text inside a rectangular area. */
 function drawBugTextInArea(
-  page: any,
-  font: any,
-  text: string,
-  x: number, y: number, w: number, h: number,
-  vertical: boolean,
-  anchorStart: boolean
+  page: any, font: any, text: string,
+  x: number, y: number, w: number, h: number, vertical: boolean, anchorStart: boolean
 ) {
   if (!text) return;
-  const k = rgb(0,0,0);
-  const TARGET_PT = 10;
-  const MIN_PT = 6;
+  const k = rgb(0, 0, 0);
+  const TARGET_PT = 10;           // desired 10 pt
+  const MIN_PT = 6;               // allow shrink if needed
   const THICKNESS_OVERSHOOT_PT = 2;
+
   const maxThickness = vertical ? w : h;
-  const maxAlong     = vertical ? h : w;
+  const maxAlong = vertical ? h : w;
 
   let size = Math.min(TARGET_PT, maxThickness + THICKNESS_OVERSHOOT_PT);
   size = Math.max(size, MIN_PT);
@@ -407,7 +442,9 @@ function drawBugTextInArea(
   }
 }
 
-/** Draw gutter bug (and optional barcode) – CENTERED ON THE ART EDGE */
+/**
+ * Draw gutter bug (and optional barcode) – now OFFSET from the art edge by BUG_STANDOFF_IN (default 1/8")
+ */
 async function drawGutterBug(
   page: any,
   outDoc: PDFDocument,
@@ -437,14 +474,21 @@ async function drawGutterBug(
   if (!side) return;
 
   const thickPt = pt(BUG_THICKNESS_IN);
+  const wantStandOffPt = pt(BUG_STANDOFF_IN);
+
+  // How much room is there on the chosen side?
+  const availGap = availableGapForSide(side, layout, r, c, xL, xR, yB, yT, sheetWpt, sheetHpt);
+  // Use up to 1/8" standoff, but cap so we never exceed the available gap minus the strip thickness.
+  const standOffPt = Math.min(wantStandOffPt, Math.max(0, availGap - thickPt));
+
   let bx = xL, by = yB, bw = placeW, bh = thickPt, vertical = false;
-  if (side === 'top')    { bx = xL;           by = yT;           bw = placeW;   bh = thickPt; vertical = false; }
-  if (side === 'bottom') { bx = xL;           by = yB - thickPt; bw = placeW;   bh = thickPt; vertical = false; }
-  if (side === 'left')   { bx = xL - thickPt; by = yB;           bw = thickPt;  bh = placeH;  vertical = true;  }
-  if (side === 'right')  { bx = xR;           by = yB;           bw = thickPt;  bh = placeH;  vertical = true;  }
+  if (side === 'top')    { bx = xL; by = yT + standOffPt;       bw = placeW; bh = thickPt; vertical = false; }
+  if (side === 'bottom') { bx = xL; by = yB - thickPt - standOffPt; bw = placeW; bh = thickPt; vertical = false; }
+  if (side === 'left')   { bx = xL - thickPt - standOffPt;     by = yB; bw = thickPt; bh = placeH; vertical = true; }
+  if (side === 'right')  { bx = xR + standOffPt;               by = yB; bw = thickPt; bh = placeH; vertical = true; }
 
   // White strip
-  page.drawRectangle({ x: bx, y: by, width: bw, height: bh, color: rgb(1,1,1), opacity: 1 });
+  page.drawRectangle({ x: bx, y: by, width: bw, height: bh, color: rgb(1, 1, 1), opacity: 1 });
 
   const wantBarcode = !!it.includeAutoShipBarcodeInBug;
   const pathText = String(it.localArtworkPath || '');
@@ -452,7 +496,7 @@ async function drawGutterBug(
 
   if (!vertical) {
     const centerX = cellCenterX;
-    const leftW  = Math.max(0, centerX - bx - PAD);
+    const leftW = Math.max(0, centerX - bx - PAD);
     const rightW = Math.max(0, bx + bw - (centerX + PAD));
     const rightX = centerX + PAD;
 
@@ -461,7 +505,10 @@ async function drawGutterBug(
       let img = barcodeCache.get(key);
       if (!img) {
         const bytes = await makeBarcodePngBytes(`${it.orderId}-${it.id}`, false);
-        if (bytes) { img = await outDoc.embedPng(bytes); barcodeCache.set(key, img); }
+        if (bytes) {
+          img = await outDoc.embedPng(bytes);
+          barcodeCache.set(key, img);
+        }
       }
       if (img && leftW > 0) {
         const iw = img.width, ih = img.height;
@@ -472,9 +519,7 @@ async function drawGutterBug(
         page.drawImage(img, { x, y, width: w, height: h });
       }
     }
-
     drawBugTextInArea(page, font, pathText, rightX, by, rightW, bh, false, true);
-
   } else {
     const centerY = cellCenterY;
     const botH = Math.max(0, centerY - by - PAD);
@@ -486,7 +531,10 @@ async function drawGutterBug(
       let img = barcodeCache.get(key);
       if (!img) {
         const bytes = await makeBarcodePngBytes(`${it.orderId}-${it.id}`, true);
-        if (bytes) { img = await outDoc.embedPng(bytes); barcodeCache.set(key, img); }
+        if (bytes) {
+          img = await outDoc.embedPng(bytes);
+          barcodeCache.set(key, img);
+        }
       }
       if (img && botH > 0) {
         const iw = img.width, ih = img.height;
@@ -497,18 +545,25 @@ async function drawGutterBug(
         page.drawImage(img, { x, y, width: w, height: h });
       }
     }
-
     drawBugTextInArea(page, font, pathText, bx, topY, bw, topH, true, true);
   }
 }
 
-
 /** COVER PAGE (supports blanks for crops only) */
 async function createCoverPage(
-  outDoc: PDFDocument, layout: Layout, orderItems: any[], itemAssets: any[],
-  perItemEmbeddedPages: Map<number, any[]>, placements: Array<{r:number;c:number;itemIdx:number|null}>,
-  pageIndex: number, font: any, boldFont: any, flipPositionsThisPage: boolean,
-  defaultCutWpt: number, defaultCutHpt: number, bindingEdge: BindingEdge
+  outDoc: PDFDocument,
+  layout: Layout,
+  orderItems: any[],
+  itemAssets: any[],
+  perItemEmbeddedPages: Map<number, any[]>,
+  placements: Array<{ r: number; c: number; itemIdx: number | null }>,
+  pageIndex: number,
+  font: any,
+  boldFont: any,
+  flipPositionsThisPage: boolean,
+  defaultCutWpt: number,
+  defaultCutHpt: number,
+  bindingEdge: BindingEdge
 ) {
   const sheetWpt = pt(layout.sheetWIn), sheetHpt = pt(layout.sheetHIn);
   const page = outDoc.addPage([sheetWpt, sheetHpt]);
@@ -528,7 +583,8 @@ async function createCoverPage(
     const isLeftEdge = cEff === 0, isRightEdge = cEff === layout.cols - 1;
     const isBottomEdge = rEff === 0, isTopEdge = rEff === layout.rows - 1;
 
-    drawIndividualCrops(page, cellCenterX, cellCenterY, cutWpt_i, cutHpt_i, 0.25, 0.125, 0.5, isLeftEdge, isRightEdge, isBottomEdge, isTopEdge, layout.gapHpt, layout.gapVpt);
+    drawIndividualCrops(page, cellCenterX, cellCenterY, cutWpt_i, cutHpt_i,
+      0.25, 0.125, 0.5, isLeftEdge, isRightEdge, isBottomEdge, isTopEdge, layout.gapHpt, layout.gapVpt);
   }
 
   // Artwork (only where present)
@@ -544,6 +600,7 @@ async function createCoverPage(
     const bleedWpt_i = pt((+it.bleedWidthInches || 0) || (+it.cutWidthInches || 0));
     const bleedHpt_i = pt((+it.bleedHeightInches || 0) || (+it.cutHeightInches || 0));
     const hasBleed_i = bleedWpt_i > cutWpt_i || bleedHpt_i > cutHpt_i;
+
     const placeW = hasBleed_i ? bleedWpt_i : cutWpt_i;
     const placeH = hasBleed_i ? bleedHpt_i : cutHpt_i;
 
@@ -563,8 +620,8 @@ async function createCoverPage(
 
     const x0 = cellCenterX - placeW / 2 + sx;
     const y0 = cellCenterY - placeH / 2 + sy;
-    const { x, y } = adjustXYForRotation(x0, y0, placeW, placeH, rotDeg);
 
+    const { x, y } = adjustXYForRotation(x0, y0, placeW, placeH, rotDeg);
     page.drawPage(ep, { x, y, width: placeW, height: placeH, rotate: degrees(rotDeg) });
   }
 
@@ -578,18 +635,17 @@ async function createCoverPage(
 
     // Apply binding edge position adjustments
     const { rEff, cEff } = getEffectivePosition(plc.r, plc.c, layout, bindingEdge, flipPositionsThisPage);
-
     const cellCenterX = layout.offX + cEff * (layout.cellWpt + layout.gapHpt) + layout.cellWpt / 2;
     const cellCenterY = layout.offY + rEff * (layout.cellHpt + layout.gapVpt) + layout.cellHpt / 2;
 
-    drawLavenderOverlay(page, cellCenterX, cellCenterY, cutWpt_i, cutHpt_i, String(it.orderId ?? ''), String(it.id ?? ''), font, boldFont);
+    drawLavenderOverlay(page, cellCenterX, cellCenterY, cutWpt_i, cutHpt_i,
+      String(it.orderId ?? ''), String(it.id ?? ''), font, boldFont);
   }
 }
 
 function clamp(n: number, lo: number, hi: number) { return Math.max(lo, Math.min(hi, n)); }
 function normDeg(d: number) { return ((d % 360) + 360) % 360; }
 function deg2rad(d: number) { return normDeg(d) * Math.PI / 180; }
-
 
 // Default size for in-art barcode (clamped to the cut area)
 const IN_ART_BARCODE_DEFAULT_W_IN = 1.00;
@@ -606,9 +662,12 @@ async function drawInArtBarcodeAtTargetPage(
   it: any,
   shouldDraw: boolean,
   rotDeg: number,
-  x0: number, y0: number,             // pre-rotation artwork bottom-left in sheet coords
-  cutWpt: number, cutHpt: number,     // cut size in pts
-  bleedWpt: number, bleedHpt: number, // bleed size in pts (or = cut)
+  x0: number,
+  y0: number,               // pre-rotation artwork bottom-left in sheet coords
+  cutWpt: number,
+  cutHpt: number,           // cut size in pts
+  bleedWpt: number,
+  bleedHpt: number,         // bleed size in pts (or = cut)
   barcodeCache: Map<string, any>,
   font: any
 ) {
@@ -640,23 +699,26 @@ async function drawInArtBarcodeAtTargetPage(
   let img = barcodeCache.get(cacheKey);
   if (!img) {
     const bytes = await makeBarcodePngBytes(`${it.orderId}-${it.id}`, /*vertical=*/false);
-    if (bytes) { img = await outDoc.embedPng(bytes); barcodeCache.set(cacheKey, img); }
+    if (bytes) {
+      img = await outDoc.embedPng(bytes);
+      barcodeCache.set(cacheKey, img);
+    }
   }
 
   // Compute size (w,h) with aspect respected; fall back to text if needed
   let w = targetW, h = targetH, useTextFallback = !img;
-
   if (img) {
     const iw = img.width, ih = img.height;
     const scale = Math.max(0.01, Math.min(targetW / iw, targetH / ih));
-    w = iw * scale; h = ih * scale;
+    w = iw * scale;
+    h = ih * scale;
   }
 
   // CUT center in sheet coords
   const cutLLx = x0 + Math.max(0, (bleedWpt - cutWpt) / 2);
   const cutLLy = y0 + Math.max(0, (bleedHpt - cutHpt) / 2);
-  const cutCx  = cutLLx + cutWpt / 2;
-  const cutCy  = cutLLy + cutHpt / 2;
+  const cutCx = cutLLx + cutWpt / 2;
+  const cutCy = cutLLy + cutHpt / 2;
 
   // Intended *center* of the barcode in unrotated (art-space) coords:
   const centerX0 = cutLLx + inXpt + w / 2;
@@ -686,36 +748,47 @@ async function drawInArtBarcodeAtTargetPage(
   let size = 8;
   const maxWForText = targetW;
   while (size > 5 && font.widthOfTextAtSize(text, size) > maxWForText) size -= 0.5;
+
   const tw = font.widthOfTextAtSize(text, size);
   const th = size;
 
   const centerX0_txt = cutLLx + inXpt + tw / 2;
   const centerY0_txt = cutLLy + inYpt + th / 2;
+
   const vx2 = centerX0_txt - cutCx;
   const vy2 = centerY0_txt - cutCy;
+
   const centerX_txt = cutCx + (vx2 * cosT - vy2 * sinT);
   const centerY_txt = cutCy + (vx2 * sinT + vy2 * cosT);
+
   const halfWx2 = (tw / 2) * cosT - (th / 2) * sinT;
   const halfWy2 = (tw / 2) * sinT + (th / 2) * cosT;
   const drawX_txt = centerX_txt - halfWx2;
   const drawY_txt = centerY_txt - halfWy2;
 
-  page.drawText(text, { x: drawX_txt, y: drawY_txt, size, font, color: rgb(0,0,0), rotate: degrees(normDeg(rotDeg)) });
+  page.drawText(text, { x: drawX_txt, y: drawY_txt, size, font, color: rgb(0, 0, 0), rotate: degrees(normDeg(rotDeg)) });
 }
 
-
 /* ---------- entry ---------- */
+
 export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
   try {
     const pd = async (k: string) => (await job.getPrivateData(k)) as string;
+
     let payloadRaw = await pd('payload');
 
     async function tryParse(text: string) {
       const cleaned = (text || '').replace(/^﻿/, '').trim();
-      try { return JSON.parse(cleaned); } catch (e1:any) {
+      try {
+        return JSON.parse(cleaned);
+      } catch (e1: any) {
         if (cleaned.startsWith('"') && cleaned.endsWith('"')) {
-          const unwrapped = cleaned.slice(1, -1).replace(/\"/g, '"');
-          try { return JSON.parse(unwrapped); } catch (e2:any) { /* fall through */ }
+          const unwrapped = cleaned.slice(1, -1).replace(/\\"/g, '"');
+          try {
+            return JSON.parse(unwrapped);
+          } catch (e2: any) {
+            /* fall through */
+          }
         }
         throw e1;
       }
@@ -723,18 +796,20 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
 
     let payload: any = null;
     if (payloadRaw) {
-      try { payload = await tryParse(payloadRaw); }
-      catch (e:any) {
+      try {
+        payload = await tryParse(payloadRaw);
+      } catch (e: any) {
         await job.log(LogLevel.Warning, `Failed to parse payload PD; will try reading asset. Error: ${e.message || e}`);
       }
     }
+
     if (!payload) {
       try {
         const inPath = await job.get(AccessLevel.ReadOnly);
         const buf = await fs.readFile(inPath);
         const asText = buf.toString('utf8');
         payload = await tryParse(asText);
-      } catch (e:any) {
+      } catch (e: any) {
         return job.fail('Invalid JSON in payload private data and no parseable JSON from input asset');
       }
     }
@@ -765,8 +840,8 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
 
     const impositionWidth = +(orderItems[0]?.impositionWidth || 19);
     const impositionHeight = +(orderItems[0]?.impositionHeight || 13);
-
     const requestedOrientation = orderItems[0]?.impositionOrientation?.toLowerCase();
+
     let sheetWIn: number, sheetHIn: number, actualOrientation: string;
     if (requestedOrientation === 'portrait') {
       sheetWIn = Math.min(impositionWidth, impositionHeight);
@@ -777,20 +852,24 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
       sheetHIn = Math.min(impositionWidth, impositionHeight);
       actualOrientation = 'landscape';
     } else {
-      sheetWIn = impositionWidth; sheetHIn = impositionHeight;
+      sheetWIn = impositionWidth;
+      sheetHIn = impositionHeight;
       actualOrientation = sheetHIn > sheetWIn ? 'portrait' : 'landscape';
     }
 
-    await job.log(LogLevel.Info,
-      `Sheet ${sheetWIn}x${sheetHIn} (${actualOrientation}${requestedOrientation ? ' - explicit' : ' - inferred'}); ` +
-      `Cut ${maxCutWIn}x${maxCutHIn}; Bleed ${maxBleedWIn}x${maxBleedHIn}; Gaps H=${gapHIn} V=${gapVIn}; Items=${orderItems.length}`
+    await job.log(
+      LogLevel.Info,
+      `Sheet ${sheetWIn}x${sheetHIn} (${actualOrientation}${requestedOrientation ? ' - explicit' : ' - inferred'}); + Cut ${maxCutWIn}x${maxCutHIn}; Bleed ${maxBleedWIn}x${maxBleedHIn}; Gaps H=${gapHIn} V=${gapVIn}; Items=${orderItems.length}`
     );
-    await job.log(LogLevel.Info, `Outer sheet margins set to 0.125".`);
+    await job.log(LogLevel.Info, 'Outer sheet margins set to 0.125".');
 
     const layout = planLayout(sheetWIn, sheetHIn, orderItems, requiredCount);
     if (!layout) return job.fail(`Items/positions cannot fit on ${sheetWIn}x${sheetHIn} (${actualOrientation}) with current gaps and 0.125" margins`);
 
-    await job.log(LogLevel.Info, `Impose ${layout.cols}x${layout.rows} on ${layout.sheetWIn}x${layout.sheetHIn} (${layout.orientation}). Empty cells: ${layout.waste}`);
+    await job.log(
+      LogLevel.Info,
+      `Impose ${layout.cols}x${layout.rows} on ${layout.sheetWIn}x${layout.sheetHIn} (${layout.orientation}). Empty cells: ${layout.waste}`
+    );
 
     const sheetWpt = pt(layout.sheetWIn), sheetHpt = pt(layout.sheetHIn);
 
@@ -800,11 +879,12 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     const itemAssets = await Promise.all(orderItems.map(async (it) => {
       const url = `${baseUrl}${it.id}?pw=51ee6f3a3da5f642470202617cbcbd23`;
       let bytes: Uint8Array;
-      try { bytes = await httpGetBytes(url); }
-      catch (e:any) {
+      try {
+        bytes = await httpGetBytes(url);
+      } catch (e: any) {
         try {
           const jobPath = await job.get(AccessLevel.ReadWrite);
-          const jobDir = jobPath.substring(0, jobPath.lastIndexOf('/')+1);
+          const jobDir = jobPath.substring(0, jobPath.lastIndexOf('/') + 1);
           bytes = await fs.readFile(jobDir + (it.localArtworkPath || ''));
         } catch (e2) {
           throw new Error(`Failed to fetch art for item ${it.id}: ${e?.message || e}`);
@@ -833,7 +913,7 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     for (const asset of itemAssets) await ensureEmbeddedPagesForItem(asset);
 
     // placements: fill up to requiredCount; null itemIdx means BLANK
-    const placements: Array<{ r:number; c:number; itemIdx: number|null }> = [];
+    const placements: Array<{ r: number; c: number; itemIdx: number | null }> = [];
     for (let r = 0; r < layout.rows; r++) {
       for (let c = 0; c < layout.cols; c++) {
         const idx = r * layout.cols + c;
@@ -847,8 +927,12 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     const includeCover = orderItems.some(it => !!it.includeCoverSheet);
     const anyBackInks = orderItems.some(it => (+it.inksBack || 0) !== 0);
     const numCoverPages = includeCover ? (anyBackInks ? 2 : 1) : 0;
-    await job.log(LogLevel.Info, `Cover pages: ${numCoverPages} (${includeCover ? 'includeCoverSheet=true' : 'disabled'}; inksBack ${anyBackInks ? 'non-zero' : 'zero'})`);
-    
+
+    await job.log(
+      LogLevel.Info,
+      `Cover pages: ${numCoverPages} (${includeCover ? 'includeCoverSheet=true' : 'disabled'}; inksBack ${anyBackInks ? 'non-zero' : 'zero'})`
+    );
+
     if (anyBackInks) {
       const edgeNorm = bindingEdge.toLowerCase();
       if (edgeNorm === 'left' || edgeNorm === 'right') {
@@ -863,9 +947,12 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     const defaultCutHpt = pt(maxCutHIn);
 
     if (numCoverPages >= 1)
-      await createCoverPage(outDoc, layout, orderItems, itemAssets, perItemEmbeddedPages, placements, 0, font, boldFont, /*flip*/ false, defaultCutWpt, defaultCutHpt, bindingEdge);
+      await createCoverPage(outDoc, layout, orderItems, itemAssets, perItemEmbeddedPages,
+        placements, 0, font, boldFont, /*flip*/ false, defaultCutWpt, defaultCutHpt, bindingEdge);
+
     if (numCoverPages === 2)
-      await createCoverPage(outDoc, layout, orderItems, itemAssets, perItemEmbeddedPages, placements, 1, font, boldFont, /*flip*/ true,  defaultCutWpt, defaultCutHpt, bindingEdge);
+      await createCoverPage(outDoc, layout, orderItems, itemAssets, perItemEmbeddedPages,
+        placements, 1, font, boldFont, /*flip*/ true, defaultCutWpt, defaultCutHpt, bindingEdge);
 
     // Cache for per-item barcode images
     const barcodeCache: Map<string, any> = new Map();
@@ -890,13 +977,13 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
         const isLeftEdge = cEff === 0, isRightEdge = cEff === layout.cols - 1;
         const isBottomEdge = rEff === 0, isTopEdge = rEff === layout.rows - 1;
 
-        drawIndividualCrops(page, cellCenterX, cellCenterY, cutWpt_i, cutHpt_i, 0.25, 0.125, 0.5, isLeftEdge, isRightEdge, isBottomEdge, isTopEdge, layout.gapHpt, layout.gapVpt);
+        drawIndividualCrops(page, cellCenterX, cellCenterY, cutWpt_i, cutHpt_i,
+          0.25, 0.125, 0.5, isLeftEdge, isRightEdge, isBottomEdge, isTopEdge, layout.gapHpt, layout.gapVpt);
       }
 
       // Artwork + Bugs + In-art barcode (ONLY for non-blank placements)
       for (const plc of placements) {
         if (plc.itemIdx === null) continue;
-
         const asset = itemAssets[plc.itemIdx];
         if (p >= asset.pageCount) continue;
 
@@ -908,6 +995,7 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
         const bleedWpt_i = pt((+it.bleedWidthInches || 0) || (+it.cutWidthInches || 0));
         const bleedHpt_i = pt((+it.bleedHeightInches || 0) || (+it.cutHeightInches || 0));
         const hasBleed_i = bleedWpt_i > cutWpt_i || bleedHpt_i > cutHpt_i;
+
         const placeW = hasBleed_i ? bleedWpt_i : cutWpt_i;
         const placeH = hasBleed_i ? bleedHpt_i : cutHpt_i;
 
@@ -928,34 +1016,24 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
 
         const x0 = cellCenterX - placeW / 2 + sx;
         const y0 = cellCenterY - placeH / 2 + sy;
-        const { x, y } = adjustXYForRotation(x0, y0, placeW, placeH, rotDeg);
 
+        const { x, y } = adjustXYForRotation(x0, y0, placeW, placeH, rotDeg);
         page.drawPage(ep, { x, y, width: placeW, height: placeH, rotate: degrees(rotDeg) });
 
+        // NEW: gutter bug (now offset 1/8" from art edge when possible)
         await drawGutterBug(page, outDoc, it, layout, rEff, cEff, placeW, placeH, sheetWpt, sheetHpt, barcodeCache, font);
 
         // Draw in-art barcode on requested page (inArtBarcodePage 1-based); 0 => last page of this item's PDF
         const cfgPage = Math.floor(+it.inArtBarcodePage || 0);
-        let targetIdx = (cfgPage > 0) ? (cfgPage - 1) : (asset.pageCount - 1);
-        // keep within this item's bounds
+        let targetIdx = (cfgPage > 0) ? (cfgPage - 1) : (asset.pageCount - 1); // keep within this item's bounds
         targetIdx = clamp(targetIdx, 0, asset.pageCount - 1);
         const shouldDraw = (p === targetIdx);
 
         await drawInArtBarcodeAtTargetPage(
-          page,
-          outDoc,
-          it,
-          shouldDraw,
-          rotDeg,
-          x0, y0,
-          cutWpt_i, cutHpt_i,
-          bleedWpt_i, bleedHpt_i,
-          barcodeCache,
-          font
+          page, outDoc, it, shouldDraw, rotDeg, x0, y0,
+          cutWpt_i, cutHpt_i, bleedWpt_i, bleedHpt_i, barcodeCache, font
         );
-
       }
-
     }
 
     // Save & send
@@ -966,7 +1044,7 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     const base = 'Batch-' + payload.batchId + '-' + payload.artworkUrlId + '.pdf';
     if ((job as any).sendToSingle) await (job as any).sendToSingle(base);
     else job.sendTo(rwPath, 0, base);
-  } catch (e:any) {
+  } catch (e: any) {
     await job.fail(`Batching impose error: ${e.message || e}`);
   }
 }

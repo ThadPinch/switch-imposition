@@ -136,7 +136,8 @@ function rotationForPage(
 
 /* ---------- Gutter Bug ---------- */
 type BugSide = 'left'|'right'|'top'|'bottom';
-const BUG_THICKNESS_IN = 0.125;
+const BUG_THICKNESS_IN = 0.125;   // strip thickness
+const BUG_STANDOFF_IN  = 0.125;   // NEW: desired gap between art edge and bug strip
 
 function availableGapForSide(
   side:BugSide,
@@ -159,7 +160,11 @@ function pickBugSide(
   xL:number, xR:number, yB:number, yT:number,
   sheetWpt:number, sheetHpt:number
 ): BugSide | null {
-  const need = pt(BUG_THICKNESS_IN);
+  const thickPt = pt(BUG_THICKNESS_IN);
+  const wantStandOffPt = pt(BUG_STANDOFF_IN);
+  const needFull = thickPt + wantStandOffPt;
+  const needMin  = thickPt;
+
   const req = String(requested||'Inside').toLowerCase() as any;
 
   const gaps:Record<BugSide,number> = {
@@ -171,26 +176,30 @@ function pickBugSide(
 
   const dist:Record<BugSide,number> = { left:xL, right:sheetWpt-xR, bottom:yB, top:sheetHpt-yT };
 
-  function pickAxis(axis:'h'|'v', inside:boolean): BugSide | null {
+  function pickAxis(axis:'h'|'v', inside:boolean, needPt:number): BugSide | null {
     const sides = axis==='h' ? (['left','right'] as BugSide[]) : (['bottom','top'] as BugSide[]);
-    const viable = sides.filter(s => gaps[s] >= need);
+    const viable = sides.filter(s => gaps[s] >= needPt);
     if (!viable.length) return null;
     viable.sort((a,b)=> inside ? (dist[b]-dist[a]) : (dist[a]-dist[b]));
     return viable[0]??null;
   }
 
   if (req==='left'||req==='right'||req==='top'||req==='bottom') {
-    return gaps[req] >= need ? req : null;
+    return gaps[req] >= needMin ? req : null;
   }
 
   const horizMax = Math.max(gaps.left, gaps.right);
   const vertMax  = Math.max(gaps.top, gaps.bottom);
-  const horizOK = horizMax >= need, vertOK = vertMax >= need;
+  const horizOK = horizMax >= needMin, vertOK = vertMax >= needMin;
   const inside = req==='inside';
 
-  if (horizOK && vertOK)  return pickAxis(horizMax>=vertMax?'h':'v', inside) ?? pickAxis(horizMax>=vertMax?'v':'h', inside);
-  if (horizOK)            return pickAxis('h', inside);
-  if (vertOK)             return pickAxis('v', inside);
+  if (horizOK && vertOK)
+    return pickAxis(horizMax>=vertMax?'h':'v', inside, needFull)
+        ?? pickAxis(horizMax>=vertMax?'v':'h', inside, needFull)
+        ?? pickAxis(horizMax>=vertMax?'h':'v', inside, needMin)
+        ?? pickAxis(horizMax>=vertMax?'v':'h', inside, needMin);
+  if (horizOK) return pickAxis('h', inside, needFull) ?? pickAxis('h', inside, needMin);
+  if (vertOK)  return pickAxis('v', inside, needFull) ?? pickAxis('v', inside, needMin);
   return null;
 }
 
@@ -211,9 +220,10 @@ async function makeBarcodePngBytes(text:string): Promise<Uint8Array|null>{
 function drawBugText(page:any, font:any, text:string, bx:number, by:number, bw:number, bh:number, vertical:boolean, leftJustX:number, baselineY:number){
   if (!text) return;
   const k = rgb(0,0,0);
-  const TARGET_PT = 10;
+  const TARGET_PT = 10;                // desired 10 pt
   const MIN_PT = 6;
-  const THICKNESS_OVERSHOOT_PT = 2; // allow a slight overshoot past the strip thickness for readability
+  const THICKNESS_OVERSHOOT_PT = 2;    // allow a slight overshoot past strip thickness
+
   const maxThickness = vertical ? bw : bh;
   const maxAlong = vertical ? bh : bw;
 
@@ -238,7 +248,10 @@ function drawBugText(page:any, font:any, text:string, bx:number, by:number, bw:n
   }
 }
 
-/** Draw gutter bug + barcode aligned to BLEED edge and centered along that edge */
+/**
+ * Draw gutter bug + barcode aligned to BLEED edge and centered along that edge,
+ * now OFFSET from the art edge by BUG_STANDOFF_IN (default 1/8")
+ */
 async function drawGutterBug(
   page:any, outDoc:PDFDocument,
   sheetWpt:number, sheetHpt:number,
@@ -260,12 +273,18 @@ async function drawGutterBug(
   if (!side) return;
 
   const thick = pt(BUG_THICKNESS_IN);
+  const wantStandOffPt = pt(BUG_STANDOFF_IN);
+  // Actual available gap on the chosen side
+  const availGap = availableGapForSide(side, cols, rows, gapHpt, gapVpt, r, c, xL, xR, yB, yT, sheetWpt, sheetHpt);
+  // Use up to 1/8" standoff, capped so the strip still fits in the gutter
+  const standOffPt = Math.min(wantStandOffPt, Math.max(0, availGap - thick));
+
   let bx=xL, by=yB, bw=placeW, bh=thick, vertical=false;
 
-  if (side==='top')    { bx=xL; by=yT;           bw=placeW; bh=thick;   vertical=false; }
-  if (side==='bottom') { bx=xL; by=yB - thick;   bw=placeW; bh=thick;   vertical=false; }
-  if (side==='left')   { bx=xL - thick; by=yB;   bw=thick;  bh=placeH;  vertical=true;  }
-  if (side==='right')  { bx=xR;        by=yB;    bw=thick;  bh=placeH;  vertical=true;  }
+  if (side==='top')    { bx=xL; by=yT + standOffPt;           bw=placeW; bh=thick;   vertical=false; }
+  if (side==='bottom') { bx=xL; by=yB - thick - standOffPt;   bw=placeW; bh=thick;   vertical=false; }
+  if (side==='left')   { bx=xL - thick - standOffPt; by=yB;   bw=thick;  bh=placeH;  vertical=true;  }
+  if (side==='right')  { bx=xR + standOffPt;        by=yB;    bw=thick;  bh=placeH;  vertical=true;  }
 
   // white strip
   page.drawRectangle({ x:bx, y:by, width:bw, height:bh, color:rgb(1,1,1), opacity:1 });
