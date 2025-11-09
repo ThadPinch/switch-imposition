@@ -211,8 +211,19 @@ async function makeBarcodePngBytes(text:string): Promise<Uint8Array|null>{
 function drawBugText(page:any, font:any, text:string, bx:number, by:number, bw:number, bh:number, vertical:boolean, leftJustX:number, baselineY:number){
   if (!text) return;
   const k = rgb(0,0,0);
-  let size = Math.min(6, (vertical?bw:bh) * 0.40);
-  if (size < 3) size = 3;
+  const TARGET_PT = 10;
+  const MIN_PT = 6;
+  const THICKNESS_OVERSHOOT_PT = 2; // allow a slight overshoot past the strip thickness for readability
+  const maxThickness = vertical ? bw : bh;
+  const maxAlong = vertical ? bh : bw;
+
+  let size = Math.min(TARGET_PT, maxThickness + THICKNESS_OVERSHOOT_PT);
+  size = Math.max(size, MIN_PT);
+
+  const maxUsableAlong = Math.max(2, maxAlong - pt(0.02));
+  while (font.widthOfTextAtSize(text, size) > maxUsableAlong && size > MIN_PT) size -= 0.5;
+  if (size < MIN_PT) size = MIN_PT;
+
   const tw = font.widthOfTextAtSize(text, size);
 
   if (!vertical){

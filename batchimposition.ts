@@ -348,11 +348,18 @@ function drawBugText(
 ) {
   if (!text) return;
   const k = rgb(0,0,0);
+  const TARGET_PT = 10;
+  const MIN_PT = 6;
+  const THICKNESS_OVERSHOOT_PT = 2;
   const maxThickness = vertical ? bw : bh;
-  const maxLong = vertical ? bh : bw;
+  const maxAlong = vertical ? bh : bw;
 
-  let size = Math.min(6, maxThickness * 0.40);
-  while (font.widthOfTextAtSize(text, size) > (maxLong - 2) && size > 3) size -= 0.25;
+  let size = Math.min(TARGET_PT, maxThickness + THICKNESS_OVERSHOOT_PT);
+  size = Math.max(size, MIN_PT);
+
+  const maxUsableAlong = Math.max(2, maxAlong - pt(0.02));
+  while (font.widthOfTextAtSize(text, size) > maxUsableAlong && size > MIN_PT) size -= 0.5;
+  if (size < MIN_PT) size = MIN_PT;
 
   if (!vertical) {
     const x = anchorLeft ? bx : (bx + (bw - font.widthOfTextAtSize(text, size)) / 2);
@@ -360,7 +367,7 @@ function drawBugText(
     page.drawText(text, { x, y, size, font, color: k });
   } else {
     const x = bx + (bw - size) / 2;
-    const y = by + bh - font.widthOfTextAtSize(text, size); // start near far end; flows "away"
+    const y = by + bh - font.widthOfTextAtSize(text, size);
     page.drawText(text, { x, y, size, font, color: k, rotate: degrees(90) });
   }
 }
@@ -376,10 +383,18 @@ function drawBugTextInArea(
 ) {
   if (!text) return;
   const k = rgb(0,0,0);
+  const TARGET_PT = 10;
+  const MIN_PT = 6;
+  const THICKNESS_OVERSHOOT_PT = 2;
   const maxThickness = vertical ? w : h;
   const maxAlong     = vertical ? h : w;
-  let size = Math.min(6, maxThickness * 0.40);
-  while (font.widthOfTextAtSize(text, size) > (maxAlong - 2) && size > 3) size -= 0.25;
+
+  let size = Math.min(TARGET_PT, maxThickness + THICKNESS_OVERSHOOT_PT);
+  size = Math.max(size, MIN_PT);
+
+  const maxUsableAlong = Math.max(2, maxAlong - pt(0.02));
+  while (font.widthOfTextAtSize(text, size) > maxUsableAlong && size > MIN_PT) size -= 0.5;
+  if (size < MIN_PT) size = MIN_PT;
 
   if (!vertical) {
     const tx = anchorStart ? x : (x + (w - font.widthOfTextAtSize(text, size)) / 2);
