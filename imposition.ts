@@ -137,7 +137,7 @@ function rotationForPage(
 /* ---------- Gutter Bug ---------- */
 type BugSide = 'left'|'right'|'top'|'bottom';
 const BUG_THICKNESS_IN = 0.125;   // strip thickness
-const BUG_STANDOFF_IN  = 0.125;   // NEW: desired gap between art edge and bug strip
+const BUG_STANDOFF_IN  = 0.125;   // desired gap between art edge and bug strip
 
 function availableGapForSide(
   side:BugSide,
@@ -276,7 +276,7 @@ async function drawGutterBug(
   const wantStandOffPt = pt(BUG_STANDOFF_IN);
   // Actual available gap on the chosen side
   const availGap = availableGapForSide(side, cols, rows, gapHpt, gapVpt, r, c, xL, xR, yB, yT, sheetWpt, sheetHpt);
-  // Use up to 1/8" standoff, capped so the strip still fits in the gutter
+  // Up to 1/8" standoff, capped so the strip still fits
   const standOffPt = Math.min(wantStandOffPt, Math.max(0, availGap - thick));
 
   let bx=xL, by=yB, bw=placeW, bh=thick, vertical=false;
@@ -588,7 +588,7 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     const outerHpt = pt(outerM), outerVpt = pt(outerM);
 
     const arrWpt = cols*cutWpt + (cols-1)*gapHpt;
-    const arrHpt = rows*cutHpt + (rows-1)*gapVpt;
+    const arrHpt = rows*cutHpt + (rows-1)*gapVpt;  // <-- fixed (no stray token)
     const offX = outerHpt + (sheetWpt - 2*outerHpt - arrWpt)/2;
     const offY = outerVpt + (sheetHpt - 2*outerVpt - arrHpt)/2;
 
@@ -684,22 +684,7 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
       const { x, y } = adjustXYForRotation(x0, y0, placeW, placeH, rot);
       page.drawPage(ep, { x, y, width:placeW, height:placeH, rotate:degrees(rot) });
 
-      // gutter bug (use effective r/c to evaluate edges & gaps)
-      await drawGutterBug(
-        page, outDoc, sheetWpt, sheetHpt,
-        cols, rows, gapHpt, gapVpt,
-        rEff, cEff, cx, cy, placeW, placeH,
-        {
-          include: includeGutterBug,
-          includeBarcode,
-          bugPosition,
-          localArtworkPath,
-          orderId, lineId
-        },
-        barcodeCache, font
-      );
-
-      // in-art barcode on the requested artwork page only
+      // in‑art barcode only (art layer)
       const shouldDraw = (artIdx === targetArtIndex);
       await drawInArtBarcodeAtTargetPage(
         page, outDoc,
@@ -717,9 +702,23 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     if (useRepeat){
       for (let p=0;p<embedded.length;p++){
         const page = outDoc.addPage(sheetSize);
-
-        // crops (binding-edge aware)
         const flipThisPage = (inksBack !== 0) && (outSheetIndex % 2 === 1);
+
+        // --- BUG LAYER (under everything) ---
+        for (let r=0;r<rows;r++) for (let c=0;c<cols;c++){
+          const { rEff, cEff } = getEffectivePosition(r, c, cols, rows, bindingEdge, flipThisPage);
+          const cx = offX + cEff*(cutWpt+gapHpt) + cutWpt/2;
+          const cy = offY + rEff*(cutHpt+gapVpt) + cutHpt/2;
+          await drawGutterBug(
+            page, outDoc, sheetWpt, sheetHpt,
+            cols, rows, gapHpt, gapVpt,
+            rEff, cEff, cx, cy, placeW, placeH,
+            { include: includeGutterBug, includeBarcode, bugPosition, localArtworkPath, orderId, lineId },
+            barcodeCache, font
+          );
+        }
+
+        // --- CROPS (middle) ---
         for (let r=0;r<rows;r++) for (let c=0;c<cols;c++){
           const { rEff, cEff } = getEffectivePosition(r, c, cols, rows, bindingEdge, flipThisPage);
           const cx = offX + cEff*(cutWpt+gapHpt) + cutWpt/2;
@@ -727,6 +726,7 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
           drawIndividualCrops(page, cx, cy, cutWpt, cutHpt, 0.25, 0.125, 0.5, cEff===0, cEff===cols-1, rEff===0, rEff===rows-1, gapHpt, gapVpt);
         }
 
+        // --- ART (top) ---
         for (let r=0;r<rows;r++) for (let c=0;c<cols;c++)
           await placeOne(page, embedded[p], r, c, flipThisPage, /*artIdx*/ p);
 
@@ -740,9 +740,23 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
       let placed = 0, per = cols*rows;
       while (placed < embedded.length || (placed % per) !== 0){
         const page = outDoc.addPage(sheetSize);
-
-        // crops (binding-edge aware)
         const flipThisPage = (inksBack !== 0) && (outSheetIndex % 2 === 1);
+
+        // --- BUG LAYER (under everything) ---
+        for (let r=0;r<rows;r++) for (let c=0;c<cols;c++){
+          const { rEff, cEff } = getEffectivePosition(r, c, cols, rows, bindingEdge, flipThisPage);
+          const cx = offX + cEff*(cutWpt+gapHpt) + cutWpt/2;
+          const cy = offY + rEff*(cutHpt+gapVpt) + cutHpt/2;
+          await drawGutterBug(
+            page, outDoc, sheetWpt, sheetHpt,
+            cols, rows, gapHpt, gapVpt,
+            rEff, cEff, cx, cy, placeW, placeH,
+            { include: includeGutterBug, includeBarcode, bugPosition, localArtworkPath, orderId, lineId },
+            barcodeCache, font
+          );
+        }
+
+        // --- CROPS (middle) ---
         for (let r=0;r<rows;r++) for (let c=0;c<cols;c++){
           const { rEff, cEff } = getEffectivePosition(r, c, cols, rows, bindingEdge, flipThisPage);
           const cx = offX + cEff*(cutWpt+gapHpt) + cutWpt/2;
@@ -750,6 +764,7 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
           drawIndividualCrops(page, cx, cy, cutWpt, cutHpt, 0.25, 0.125, 0.5, cEff===0, cEff===cols-1, rEff===0, rEff===rows-1, gapHpt, gapVpt);
         }
 
+        // --- ART (top) ---
         placed = placed - (placed % per);
         for (let r=0;r<rows;r++) for (let c=0;c<cols;c++){
           const idx = placed % embedded.length;

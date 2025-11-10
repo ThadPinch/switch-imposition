@@ -957,84 +957,102 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     // Cache for per-item barcode images
     const barcodeCache: Map<string, any> = new Map();
 
-    // Production pages
-    for (let p = 0; p < maxPages; p++) {
-      const page = outDoc.addPage([sheetWpt, sheetHpt]);
-      const flipPositionsThisPage = anyBackInks && (p % 2 === 1);
+// Production pages
+for (let p = 0; p < maxPages; p++) {
+  const page = outDoc.addPage([sheetWpt, sheetHpt]);
+  const flipPositionsThisPage = anyBackInks && (p % 2 === 1);
 
-      // Crops (for ALL placements, including blanks)
-      for (const plc of placements) {
-        const hasItem = plc.itemIdx !== null;
-        const cutWpt_i = hasItem ? pt(+orderItems[plc.itemIdx!].cutWidthInches || 0) : defaultCutWpt;
-        const cutHpt_i = hasItem ? pt(+orderItems[plc.itemIdx!].cutHeightInches || 0) : defaultCutHpt;
+  // --- BUG LAYER (draw first so it's under crops & art) ---
+  for (const plc of placements) {
+    if (plc.itemIdx === null) continue;
+    const asset = itemAssets[plc.itemIdx];
+    if (p >= asset.pageCount) continue; // keep behavior the same as before
 
-        // Apply binding edge position adjustments
-        const { rEff, cEff } = getEffectivePosition(plc.r, plc.c, layout, bindingEdge, flipPositionsThisPage);
+    const it = asset.it;
 
-        const cellCenterX = layout.offX + cEff * (layout.cellWpt + layout.gapHpt) + layout.cellWpt / 2;
-        const cellCenterY = layout.offY + rEff * (layout.cellHpt + layout.gapVpt) + layout.cellHpt / 2;
+    const cutWpt_i  = pt(+it.cutWidthInches  || 0);
+    const cutHpt_i  = pt(+it.cutHeightInches || 0);
+    const bleedWpt_i = pt((+it.bleedWidthInches  || 0) || (+it.cutWidthInches  || 0));
+    const bleedHpt_i = pt((+it.bleedHeightInches || 0) || (+it.cutHeightInches || 0));
+    const hasBleed_i = bleedWpt_i > cutWpt_i || bleedHpt_i > cutHpt_i;
+    const placeW = hasBleed_i ? bleedWpt_i : cutWpt_i;
+    const placeH = hasBleed_i ? bleedHpt_i : cutHpt_i;
 
-        const isLeftEdge = cEff === 0, isRightEdge = cEff === layout.cols - 1;
-        const isBottomEdge = rEff === 0, isTopEdge = rEff === layout.rows - 1;
+    const { rEff, cEff } = getEffectivePosition(plc.r, plc.c, layout, bindingEdge, flipPositionsThisPage);
+    const cellCenterX = layout.offX + cEff * (layout.cellWpt + layout.gapHpt) + layout.cellWpt / 2;
+    const cellCenterY = layout.offY + rEff * (layout.cellHpt + layout.gapVpt) + layout.cellHpt / 2;
 
-        drawIndividualCrops(page, cellCenterX, cellCenterY, cutWpt_i, cutHpt_i,
-          0.25, 0.125, 0.5, isLeftEdge, isRightEdge, isBottomEdge, isTopEdge, layout.gapHpt, layout.gapVpt);
-      }
+    await drawGutterBug(
+      page, outDoc, it, layout, rEff, cEff, placeW, placeH, sheetWpt, sheetHpt, barcodeCache, font
+    );
+  }
 
-      // Artwork + Bugs + In-art barcode (ONLY for non-blank placements)
-      for (const plc of placements) {
-        if (plc.itemIdx === null) continue;
-        const asset = itemAssets[plc.itemIdx];
-        if (p >= asset.pageCount) continue;
+  // --- CROPS (middle layer) ---
+  for (const plc of placements) {
+    const hasItem = plc.itemIdx !== null;
+    const cutWpt_i = hasItem ? pt(+orderItems[plc.itemIdx!].cutWidthInches || 0) : defaultCutWpt;
+    const cutHpt_i = hasItem ? pt(+orderItems[plc.itemIdx!].cutHeightInches || 0) : defaultCutHpt;
 
-        const embeddedPages = perItemEmbeddedPages.get(asset.it.id as number)!;
-        const it = asset.it;
+    const { rEff, cEff } = getEffectivePosition(plc.r, plc.c, layout, bindingEdge, flipPositionsThisPage);
+    const cellCenterX = layout.offX + cEff * (layout.cellWpt + layout.gapHpt) + layout.cellWpt / 2;
+    const cellCenterY = layout.offY + rEff * (layout.cellHpt + layout.gapVpt) + layout.cellHpt / 2;
 
-        const cutWpt_i = pt(+it.cutWidthInches || 0);
-        const cutHpt_i = pt(+it.cutHeightInches || 0);
-        const bleedWpt_i = pt((+it.bleedWidthInches || 0) || (+it.cutWidthInches || 0));
-        const bleedHpt_i = pt((+it.bleedHeightInches || 0) || (+it.cutHeightInches || 0));
-        const hasBleed_i = bleedWpt_i > cutWpt_i || bleedHpt_i > cutHpt_i;
+    const isLeftEdge = cEff === 0, isRightEdge = cEff === layout.cols - 1;
+    const isBottomEdge = rEff === 0, isTopEdge = rEff === layout.rows - 1;
 
-        const placeW = hasBleed_i ? bleedWpt_i : cutWpt_i;
-        const placeH = hasBleed_i ? bleedHpt_i : cutHpt_i;
+    drawIndividualCrops(
+      page, cellCenterX, cellCenterY, cutWpt_i, cutHpt_i,
+      0.25, 0.125, 0.5, isLeftEdge, isRightEdge, isBottomEdge, isTopEdge, layout.gapHpt, layout.gapVpt
+    );
+  }
 
-        const ep = embeddedPages[Math.min(p, embeddedPages.length - 1)];
+  // --- ARTWORK (top layer) + in‑art barcode ---
+  for (const plc of placements) {
+    if (plc.itemIdx === null) continue;
+    const asset = itemAssets[plc.itemIdx];
+    if (p >= asset.pageCount) continue;
 
-        // Apply binding edge position adjustments FIRST
-        const { rEff, cEff } = getEffectivePosition(plc.r, plc.c, layout, bindingEdge, flipPositionsThisPage);
+    const embeddedPages = perItemEmbeddedPages.get(asset.it.id as number)!;
+    const it = asset.it;
 
-        const cellCenterX = layout.offX + cEff * (layout.cellWpt + layout.gapHpt) + layout.cellWpt / 2;
-        const cellCenterY = layout.offY + rEff * (layout.cellHpt + layout.gapVpt) + layout.cellHpt / 2;
+    const cutWpt_i = pt(+it.cutWidthInches || 0);
+    const cutHpt_i = pt(+it.cutHeightInches || 0);
+    const bleedWpt_i = pt((+it.bleedWidthInches || 0) || (+it.cutWidthInches || 0));
+    const bleedHpt_i = pt((+it.bleedHeightInches || 0) || (+it.cutHeightInches || 0));
+    const hasBleed_i = bleedWpt_i > cutWpt_i || bleedHpt_i > cutHpt_i;
+    const placeW = hasBleed_i ? bleedWpt_i : cutWpt_i;
+    const placeH = hasBleed_i ? bleedHpt_i : cutHpt_i;
 
-        // Then apply rotation after position is determined
-        const rotDeg = rotationForPage(it, rEff, cEff, flipPositionsThisPage, p);
+    const ep = embeddedPages[Math.min(p, embeddedPages.length - 1)];
 
-        // Get shift adjustments based on binding edge
-        const { shiftX, shiftY } = getShiftAdjustments(bindingEdge, flipPositionsThisPage, +it.imageShiftX, +it.imageShiftY);
-        const { sx, sy } = preRotationShiftFor(rotDeg, shiftX, shiftY);
+    const { rEff, cEff } = getEffectivePosition(plc.r, plc.c, layout, bindingEdge, flipPositionsThisPage);
+    const cellCenterX = layout.offX + cEff * (layout.cellWpt + layout.gapHpt) + layout.cellWpt / 2;
+    const cellCenterY = layout.offY + rEff * (layout.cellHpt + layout.gapVpt) + layout.cellHpt / 2;
 
-        const x0 = cellCenterX - placeW / 2 + sx;
-        const y0 = cellCenterY - placeH / 2 + sy;
+    const rotDeg = rotationForPage(it, rEff, cEff, flipPositionsThisPage, p);
 
-        const { x, y } = adjustXYForRotation(x0, y0, placeW, placeH, rotDeg);
-        page.drawPage(ep, { x, y, width: placeW, height: placeH, rotate: degrees(rotDeg) });
+    const { shiftX, shiftY } = getShiftAdjustments(bindingEdge, flipPositionsThisPage, +it.imageShiftX, +it.imageShiftY);
+    const { sx, sy } = preRotationShiftFor(rotDeg, shiftX, shiftY);
 
-        // NEW: gutter bug (now offset 1/8" from art edge when possible)
-        await drawGutterBug(page, outDoc, it, layout, rEff, cEff, placeW, placeH, sheetWpt, sheetHpt, barcodeCache, font);
+    const x0 = cellCenterX - placeW / 2 + sx;
+    const y0 = cellCenterY - placeH / 2 + sy;
+    const { x, y } = adjustXYForRotation(x0, y0, placeW, placeH, rotDeg);
 
-        // Draw in-art barcode on requested page (inArtBarcodePage 1-based); 0 => last page of this item's PDF
-        const cfgPage = Math.floor(+it.inArtBarcodePage || 0);
-        let targetIdx = (cfgPage > 0) ? (cfgPage - 1) : (asset.pageCount - 1); // keep within this item's bounds
-        targetIdx = clamp(targetIdx, 0, asset.pageCount - 1);
-        const shouldDraw = (p === targetIdx);
+    page.drawPage(ep, { x, y, width: placeW, height: placeH, rotate: degrees(rotDeg) });
 
-        await drawInArtBarcodeAtTargetPage(
-          page, outDoc, it, shouldDraw, rotDeg, x0, y0,
-          cutWpt_i, cutHpt_i, bleedWpt_i, bleedHpt_i, barcodeCache, font
-        );
-      }
-    }
+    // in‑art barcode (on configured page only)
+    const cfgPage = Math.floor(+it.inArtBarcodePage || 0);
+    let targetIdx = (cfgPage > 0) ? (cfgPage - 1) : (asset.pageCount - 1);
+    targetIdx = clamp(targetIdx, 0, asset.pageCount - 1);
+    const shouldDraw = (p === targetIdx);
+
+    await drawInArtBarcodeAtTargetPage(
+      page, outDoc, it, shouldDraw, rotDeg, x0, y0,
+      cutWpt_i, cutHpt_i, bleedWpt_i, bleedHpt_i, barcodeCache, font
+    );
+  }
+}
+
 
     // Save & send
     const rwPath = await job.get(AccessLevel.ReadWrite);
