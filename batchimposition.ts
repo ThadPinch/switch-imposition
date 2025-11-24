@@ -912,15 +912,35 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     }
     for (const asset of itemAssets) await ensureEmbeddedPagesForItem(asset);
 
-    // placements: fill up to requiredCount; null itemIdx means BLANK
+    // placements: fill up to requiredCount
+    // When partialFillAvailablePositions is true, cycle through available items to fill empty positions
+    // When false (default), empty positions remain blank (null itemIdx)
+    const partialFill = !!payload?.partialFillAvailablePositions;
+    
     const placements: Array<{ r: number; c: number; itemIdx: number | null }> = [];
     for (let r = 0; r < layout.rows; r++) {
       for (let c = 0; c < layout.cols; c++) {
         const idx = r * layout.cols + c;
         if (idx < requiredCount) {
-          placements.push({ r, c, itemIdx: (idx < orderItems.length ? idx : null) });
+          let itemIdx: number | null;
+          if (idx < orderItems.length) {
+            itemIdx = idx;
+          } else if (partialFill && orderItems.length > 0) {
+            // Cycle through available items to fill empty positions
+            itemIdx = idx % orderItems.length;
+          } else {
+            itemIdx = null; // Leave blank
+          }
+          placements.push({ r, c, itemIdx });
         }
       }
+    }
+    
+    if (partialFill && requiredCount > orderItems.length) {
+      await job.log(
+        LogLevel.Info,
+        `partialFillAvailablePositions=true: Cycling ${orderItems.length} item(s) to fill ${requiredCount} positions.`
+      );
     }
 
     // Cover pages by includeCoverSheet + inksBack
