@@ -77,6 +77,8 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     const inArtBarcodeYIn     = +(await pd('inArtBarcodeY')) || 0;
     // which artwork page to place the in-art barcode on (1-based; 0 => last)
     const inArtBarcodePageRaw = +(await pd('inArtBarcodePage')) || 0;
+    // NEW: include order number text below barcode
+    const includeOrderNumberWithInInArtBarcode = ((await pd('includeOrderNumberWithInInArtBarcode')) === 'true') || ((await pd('includeOrderNumberWithInInArtBarcode')) === true);
 
     const inksBack = +((await pd('inksBack')) || 0);
     const numCoverPages = includeCoverSheet ? (inksBack===0 ? 1 : 2) : 0;
@@ -208,7 +210,7 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
       const shouldDraw = (artIdx === targetArtIndex);
       await drawInArtBarcodeAtTargetPage(
         page, outDoc,
-        { enabled: includeInArtBarcode, xIn: inArtBarcodeXIn, yIn: inArtBarcodeYIn, orderId, lineId },
+        { enabled: includeInArtBarcode, xIn: inArtBarcodeXIn, yIn: inArtBarcodeYIn, orderId, lineId, includeOrderNumber: includeOrderNumberWithInInArtBarcode },
         shouldDraw,
         rot,
         x0, y0,
@@ -823,11 +825,12 @@ const IN_ART_BARCODE_DEFAULT_H_IN = 0.25;
  * Draw an in-art AutoShip barcode on a specific artwork page.
  * Caller passes `shouldDraw` for the current artwork page index.
  * Uses bwip-js if available; otherwise falls back to text.
+ * If includeOrderNumber is true, draws "{orderId}-{lineId}" text centered below the barcode.
  */
 async function drawInArtBarcodeAtTargetPage(
   page: any,
   outDoc: PDFDocument,
-  opts: { enabled:boolean, xIn:number, yIn:number, orderId:string, lineId:string },
+  opts: { enabled:boolean, xIn:number, yIn:number, orderId:string, lineId:string, includeOrderNumber?:boolean },
   shouldDraw: boolean,
   rotDeg: number,
   x0: number, y0: number,             // pre-rotation placed bottom-left (bleed or cut)
@@ -891,8 +894,46 @@ async function drawInArtBarcodeAtTargetPage(
   const drawX = centerX - halfWx;
   const drawY = centerY - halfWy;
 
+  // Check if we should include order number text below the barcode
+  const includeOrderNumber = !!opts.includeOrderNumber;
+  const orderNumberText = `${opts.orderId}-${opts.lineId}`;
+  const orderNumberSize = 6; // small text size
+  const orderNumberGap = 2;  // pts gap between barcode and text
+
   if (!useTextFallback) {
     page.drawImage(img, { x: drawX, y: drawY, width: w, height: h, rotate: degrees(normDeg(rotDeg)) });
+
+    // Draw order number text below barcode if enabled
+    if (includeOrderNumber) {
+      const tw = font.widthOfTextAtSize(orderNumberText, orderNumberSize);
+      const th = orderNumberSize;
+
+      // In unrotated coords, text center is below the barcode center
+      // "Below" means lower Y value (toward the bottom of the barcode)
+      const textCenterX0 = centerX0; // same X as barcode center
+      const textCenterY0 = centerY0 - h / 2 - orderNumberGap - th / 2; // below barcode
+
+      // Rotate text center around cut center
+      const vxT = textCenterX0 - cutCx;
+      const vyT = textCenterY0 - cutCy;
+      const textCenterX = cutCx + (vxT * cosT - vyT * sinT);
+      const textCenterY = cutCy + (vxT * sinT + vyT * cosT);
+
+      // Convert center -> bottom-left for rotated text
+      const halfTWx = (tw / 2) * cosT - (th / 2) * sinT;
+      const halfTWy = (tw / 2) * sinT + (th / 2) * cosT;
+      const textDrawX = textCenterX - halfTWx;
+      const textDrawY = textCenterY - halfTWy;
+
+      page.drawText(orderNumberText, {
+        x: textDrawX,
+        y: textDrawY,
+        size: orderNumberSize,
+        font,
+        color: rgb(0, 0, 0),
+        rotate: degrees(normDeg(rotDeg))
+      });
+    }
     return;
   }
 
@@ -915,4 +956,7 @@ async function drawInArtBarcodeAtTargetPage(
   const drawY_txt = centerY_txt - halfWy2;
 
   page.drawText(text, { x: drawX_txt, y: drawY_txt, size, font, color: rgb(0,0,0), rotate: degrees(normDeg(rotDeg)) });
+
+  // In text fallback mode, if includeOrderNumber is true, the text is already the order number
+  // so we don't need to draw it again (it would be redundant)
 }
