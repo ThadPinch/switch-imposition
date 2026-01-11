@@ -1,0 +1,50 @@
+Parse the attached purchase order and generate the workflow response JSON.
+
+PRODUCTS CATALOG:
+[Job.DataSet:Products]
+
+KITS CATALOG:
+[Job.DataSet:Kits]
+
+Return this exact structure:
+{
+  "APICall": {
+    "externalOrderID": "<PO number>",
+    "notes": "<general order notes>",
+    "shippingMethod": "<shipping method or empty string>",
+    "shippingAddresses": [
+      {
+        "company": "<company>",
+        "attention": "<contact name>",
+        "address1": "<address line 1>",
+        "address2": "<address line 2 or empty>",
+        "city": "<city>",
+        "state": "<state abbrev>",
+        "zip": "<zip>",
+        "telephone": "<phone or empty>"
+      }
+    ],
+    "orderItems": [
+      {
+        "productSKU": "<from Products catalog or empty>",
+        "kitSKU": "<from Kits catalog or empty>",
+        "name": "<product/kit name from catalog>",
+        "quantity": <integer>,
+        "artworkSingle": "",
+        "orderItemNotes": "<notes from customerProductId if any>",
+        "shippingAddresses": []
+      }
+    ]
+  },
+  "Alert": null
+}
+
+If any line items are unmapped OR have holdItem=true, replace null with:
+{
+  "Alert": {
+    "Subject": "Order [PO#] Requires Attention - [count] Issue(s)",
+    "Message": "The following items require attention:\n\n[For each issue:]\n- Item: [description]\n  Client SKU: [their code]\n  Reason: [UNMAPPED or HOLD ITEM]\n  Notes: [notes from customerProductId if hold item]\n\n[If unmapped:] Please add missing products to the catalog.\n[If hold items:] Prepress action required before production."
+  }
+}
+
+Output ONLY the JSON object.
