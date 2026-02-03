@@ -130,9 +130,14 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     const placeW = hasBleed ? bleedWpt : cutWpt;
     const placeH = hasBleed ? bleedHpt : cutHpt;
 
+    // Check if sheet-level bug is requested (SheetLongEdge or SheetShortEdge)
+    const bugPosNorm = String(bugPosition || '').toLowerCase();
+    const isSheetLevelBug = bugPosNorm === 'sheetlongedge' || bugPosNorm === 'sheetshortedge';
+    const useSheetLongEdge = bugPosNorm === 'sheetlongedge';
+
     await job.log(
       LogLevel.Info,
-      `Single impose: sheet=${sheetW}x${sheetH}", cut=${cutW}x${cutH}", bleed=${bleedW}x${bleedH}", cols=${cols}, rows=${rows}, gaps H=${gapH} V=${gapV}, coverPages=${numCoverPages}, bug=${includeGutterBug?'on':'off'} (${bugPosition}, barcode=${includeBarcode?'on':'off'}), shift=(${imageShiftXIn},${imageShiftYIn})in; bindingEdge=${bindingEdge}, qty=${quantity}, batchId=${batchId}, coverInfoOffset=(${coverSheetInfoXIn},${coverSheetInfoYIn})in.`
+      `Single impose: sheet=${sheetW}x${sheetH}", cut=${cutW}x${cutH}", bleed=${bleedW}x${bleedH}", cols=${cols}, rows=${rows}, gaps H=${gapH} V=${gapV}, coverPages=${numCoverPages}, bug=${includeGutterBug?'on':'off'} (${bugPosition}${isSheetLevelBug?' [SHEET-LEVEL]':''}, barcode=${includeBarcode?'on':'off'}), shift=(${imageShiftXIn},${imageShiftYIn})in; bindingEdge=${bindingEdge}, qty=${quantity}, batchId=${batchId}, coverInfoOffset=(${coverSheetInfoXIn},${coverSheetInfoYIn})in.`
     );
     if (inksBack !== 0) {
       const e = String(bindingEdge).toLowerCase();
@@ -227,16 +232,28 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
         const flipThisPage = (inksBack !== 0) && (outSheetIndex % 2 === 1);
 
         // --- BUG LAYER (under everything) ---
-        for (let r=0;r<rows;r++) for (let c=0;c<cols;c++){
-          const { rEff, cEff } = getEffectivePosition(r, c, cols, rows, bindingEdge, flipThisPage);
-          const cx = offX + cEff*(cutWpt+gapHpt) + cutWpt/2;
-          const cy = offY + rEff*(cutHpt+gapVpt) + cutHpt/2;
-          await drawGutterBug(
+        // Only draw per-item bugs if NOT using sheet-level bug
+        if (!isSheetLevelBug) {
+          for (let r=0;r<rows;r++) for (let c=0;c<cols;c++){
+            const { rEff, cEff } = getEffectivePosition(r, c, cols, rows, bindingEdge, flipThisPage);
+            const cx = offX + cEff*(cutWpt+gapHpt) + cutWpt/2;
+            const cy = offY + rEff*(cutHpt+gapVpt) + cutHpt/2;
+            await drawGutterBug(
+              page, outDoc, sheetWpt, sheetHpt,
+              cols, rows, gapHpt, gapVpt,
+              rEff, cEff, cx, cy, placeW, placeH,
+              { include: includeGutterBug, includeBarcode, bugPosition, localArtworkPath, orderId, lineId },
+              barcodeCache, font
+            );
+          }
+        }
+
+        // --- SHEET-LEVEL BUG (if enabled) ---
+        if (isSheetLevelBug && includeGutterBug) {
+          await drawSheetGutterBug(
             page, outDoc, sheetWpt, sheetHpt,
-            cols, rows, gapHpt, gapVpt,
-            rEff, cEff, cx, cy, placeW, placeH,
-            { include: includeGutterBug, includeBarcode, bugPosition, localArtworkPath, orderId, lineId },
-            barcodeCache, font
+            { include: includeGutterBug, includeBarcode, localArtworkPath, orderId, lineId },
+            barcodeCache, font, useSheetLongEdge
           );
         }
 
@@ -265,16 +282,28 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
         const flipThisPage = (inksBack !== 0) && (outSheetIndex % 2 === 1);
 
         // --- BUG LAYER (under everything) ---
-        for (let r=0;r<rows;r++) for (let c=0;c<cols;c++){
-          const { rEff, cEff } = getEffectivePosition(r, c, cols, rows, bindingEdge, flipThisPage);
-          const cx = offX + cEff*(cutWpt+gapHpt) + cutWpt/2;
-          const cy = offY + rEff*(cutHpt+gapVpt) + cutHpt/2;
-          await drawGutterBug(
+        // Only draw per-item bugs if NOT using sheet-level bug
+        if (!isSheetLevelBug) {
+          for (let r=0;r<rows;r++) for (let c=0;c<cols;c++){
+            const { rEff, cEff } = getEffectivePosition(r, c, cols, rows, bindingEdge, flipThisPage);
+            const cx = offX + cEff*(cutWpt+gapHpt) + cutWpt/2;
+            const cy = offY + rEff*(cutHpt+gapVpt) + cutHpt/2;
+            await drawGutterBug(
+              page, outDoc, sheetWpt, sheetHpt,
+              cols, rows, gapHpt, gapVpt,
+              rEff, cEff, cx, cy, placeW, placeH,
+              { include: includeGutterBug, includeBarcode, bugPosition, localArtworkPath, orderId, lineId },
+              barcodeCache, font
+            );
+          }
+        }
+
+        // --- SHEET-LEVEL BUG (if enabled) ---
+        if (isSheetLevelBug && includeGutterBug) {
+          await drawSheetGutterBug(
             page, outDoc, sheetWpt, sheetHpt,
-            cols, rows, gapHpt, gapVpt,
-            rEff, cEff, cx, cy, placeW, placeH,
-            { include: includeGutterBug, includeBarcode, bugPosition, localArtworkPath, orderId, lineId },
-            barcodeCache, font
+            { include: includeGutterBug, includeBarcode, localArtworkPath, orderId, lineId },
+            barcodeCache, font, useSheetLongEdge
           );
         }
 
@@ -356,15 +385,17 @@ function drawIndividualCrops(
 }
 
 /** Generate barcode PNG */
-async function makeBarcodePngBytes(text:string): Promise<Uint8Array|null>{
+async function makeBarcodePngBytes(text:string, vertical:boolean = false): Promise<Uint8Array|null>{
   if (!bwipjs) return null;
   try{
-    const buf:Buffer = await bwipjs.toBuffer({
+    const opts: any = {
       bcid:'code128', text,
       scale:2, height:8,
       includetext:false, textxalign:'center',
       backgroundcolor:'FFFFFF'
-    });
+    };
+    if (vertical) opts.rotate = 'R'; // 90° right – barcode becomes tall
+    const buf:Buffer = await bwipjs.toBuffer(opts);
     return new Uint8Array(buf);
   }catch{ return null; }
 }
@@ -549,6 +580,7 @@ function rotationForPage(
 type BugSide = 'left'|'right'|'top'|'bottom';
 const BUG_THICKNESS_IN = 0.125;   // strip thickness
 const BUG_STANDOFF_IN  = 0.125;   // desired gap between art edge and bug strip
+const SHEET_BUG_EDGE_CLEARANCE_IN = 0.172; // min distance from sheet edge to sheet-level bug
 
 function availableGapForSide(
   side:BugSide,
@@ -734,6 +766,157 @@ async function drawGutterBug(
       page.drawImage(barcodeImg, { x, y, width:finalWidth, height:finalHeight, rotate:degrees(90) });
     }
     drawBugText(page, font, label, bx, by, bw, bh, true, 0, midY);
+  }
+}
+
+/**
+ * Draw a single sheet-level gutter bug along either the long or short edge of the sheet.
+ * This draws ONE bug for the entire sheet (not per-item).
+ */
+async function drawSheetGutterBug(
+  page: any,
+  outDoc: PDFDocument,
+  sheetWpt: number,
+  sheetHpt: number,
+  options: { include: boolean, includeBarcode: boolean, localArtworkPath: string, orderId: string, lineId: string },
+  barcodeCache: Map<string, any>,
+  font: any,
+  useLongEdge: boolean
+) {
+  if (!options.include) return;
+
+  const thickPt = pt(BUG_THICKNESS_IN);
+  const margin = pt(SHEET_BUG_EDGE_CLEARANCE_IN); // min clearance from sheet edge
+
+  // Determine which physical edge to use based on sheet dimensions
+  const isPortrait = sheetHpt > sheetWpt;
+
+  // Long edge: vertical sides for portrait, horizontal sides for landscape
+  // Short edge: horizontal sides for portrait, vertical sides for landscape
+  let side: BugSide;
+  if (useLongEdge) {
+    side = isPortrait ? 'left' : 'bottom';
+  } else {
+    side = isPortrait ? 'bottom' : 'left';
+  }
+
+  // Calculate bug strip dimensions and position
+  // Place it in the outer margin area of the sheet, inset by margin so it's fully visible
+  let bx: number, by: number, bw: number, bh: number;
+  let vertical: boolean;
+
+  if (side === 'bottom') {
+    bx = margin;
+    by = margin;
+    bw = sheetWpt - 2 * margin;
+    bh = thickPt;
+    vertical = false;
+  } else if (side === 'top') {
+    bx = margin;
+    by = sheetHpt - thickPt - margin;
+    bw = sheetWpt - 2 * margin;
+    bh = thickPt;
+    vertical = false;
+  } else if (side === 'left') {
+    bx = margin;
+    by = margin;
+    bw = thickPt;
+    bh = sheetHpt - 2 * margin;
+    vertical = true;
+  } else { // right
+    bx = sheetWpt - thickPt - margin;
+    by = margin;
+    bw = thickPt;
+    bh = sheetHpt - 2 * margin;
+    vertical = true;
+  }
+
+  // White background strip
+  page.drawRectangle({ x: bx, y: by, width: bw, height: bh, color: rgb(1, 1, 1), opacity: 1 });
+
+  const wantBarcode = !!options.includeBarcode;
+  const pathText = String(options.localArtworkPath || '');
+  const PAD = 2; // pts gap between barcode and text
+
+  if (!vertical) {
+    // Horizontal bug strip
+    const EDGE_PAD = pt(0.125);
+    const centerX = sheetWpt / 2;
+    const leftStart = bx + EDGE_PAD;
+    const leftW = Math.max(0, centerX - leftStart - PAD);
+    const rightX = centerX + PAD;
+    const rightEnd = bx + bw - EDGE_PAD;
+    const rightW = Math.max(0, rightEnd - rightX);
+
+    if (wantBarcode) {
+      const key = `${options.orderId}-${options.lineId}-H-SHEET`;
+      let img = barcodeCache.get(key);
+      if (!img) {
+        const bytes = await makeBarcodePngBytes(`${options.orderId}-${options.lineId}`, false);
+        if (bytes) {
+          img = await outDoc.embedPng(bytes);
+          barcodeCache.set(key, img);
+        }
+      }
+      if (img && leftW > 0) {
+        const iw = img.width, ih = img.height;
+        const scale = Math.min(leftW / iw, bh / ih);
+        const w = iw * scale, h = ih * scale;
+        const x = centerX - PAD - w;
+        const y = by + (bh - h) / 2;
+        page.drawImage(img, { x, y, width: w, height: h });
+      }
+    }
+
+    // Draw text in right half
+    if (pathText) {
+      const k = rgb(0, 0, 0);
+      let size = 10;
+      while (font.widthOfTextAtSize(pathText, size) > rightW && size > 6) size -= 0.5;
+      const tx = rightX;
+      const ty = by + (bh - size) / 2;
+      page.drawText(pathText, { x: tx, y: ty, size, font, color: k });
+    }
+  } else {
+    // Vertical bug strip - barcode and text together, centered on the strip
+    const stripCenterX = bx + bw / 2;
+    const stripCenterY = sheetHpt / 2;
+    const k = rgb(0, 0, 0);
+
+    // Calculate text size first
+    let size = 10;
+    const maxTextLen = pt(2.0);
+    while (font.widthOfTextAtSize(pathText, size) > maxTextLen && size > 6) size -= 0.5;
+
+    // Draw barcode just below center
+    if (wantBarcode) {
+      const key = `${options.orderId}-${options.lineId}-V-SHEET`;
+      let img = barcodeCache.get(key);
+      if (!img) {
+        const bytes = await makeBarcodePngBytes(`${options.orderId}-${options.lineId}`, true);
+        if (bytes) {
+          img = await outDoc.embedPng(bytes);
+          barcodeCache.set(key, img);
+        }
+      }
+      if (img) {
+        const iw = img.width, ih = img.height;
+        const maxBarcodeH = pt(1.0);
+        const scale = Math.min((bw * 0.95) / iw, maxBarcodeH / ih);
+        const w = iw * scale, h = ih * scale;
+        // Center barcode horizontally on strip center
+        const imgX = stripCenterX - w / 2;
+        const imgY = stripCenterY - PAD - h;
+        page.drawImage(img, { x: imgX, y: imgY, width: w, height: h });
+      }
+    }
+
+    // Draw text just above center
+    if (pathText) {
+      const textX = stripCenterX - size * 0.075;
+      const textY = stripCenterY + PAD;
+      page.drawText(pathText, { x: textX, y: textY, size, font, color: k, rotate: degrees(90) });
+    }
   }
 }
 
