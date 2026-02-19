@@ -128,7 +128,7 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
       }
       const srcDoc = await PDFDocument.load(bytes);
       const pageCount = srcDoc.getPageCount();
-      return { it, bytes, pageCount };
+      return { it, bytes, srcDoc, pageCount };
     }));
 
     const maxPages = Math.max(...itemAssets.map(a => a.pageCount));
@@ -142,8 +142,26 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     async function ensureEmbeddedPagesForItem(itAsset: any) {
       const itId = itAsset.it.id as number;
       if (perItemEmbeddedPages.has(itId)) return;
-      const idxs = Array.from({ length: itAsset.pageCount }, (_, i) => i);
-      const embedded = await outDoc.embedPdf(itAsset.bytes, idxs);
+      const cutWpt_i = pt(+itAsset.it.cutWidthInches || 0);
+      const cutHpt_i = pt(+itAsset.it.cutHeightInches || 0);
+      const bleedWpt_i = pt((+itAsset.it.bleedWidthInches || 0) || (+itAsset.it.cutWidthInches || 0));
+      const bleedHpt_i = pt((+itAsset.it.bleedHeightInches || 0) || (+itAsset.it.cutHeightInches || 0));
+      const hasBleed_i = bleedWpt_i > cutWpt_i || bleedHpt_i > cutHpt_i;
+      const targetWpt = Math.max(0.01, hasBleed_i ? bleedWpt_i : cutWpt_i);
+      const targetHpt = Math.max(0.01, hasBleed_i ? bleedHpt_i : cutHpt_i);
+
+      const srcPages = itAsset.srcDoc.getPages();
+      const cropBoxes = srcPages.map((sp: any) => {
+        const { width: srcWpt, height: srcHpt } = sp.getSize();
+        const cropWpt = Math.min(targetWpt, srcWpt);
+        const cropHpt = Math.min(targetHpt, srcHpt);
+        const left = Math.max(0, (srcWpt - cropWpt) / 2);
+        const bottom = Math.max(0, (srcHpt - cropHpt) / 2);
+        return { left, right: left + cropWpt, bottom, top: bottom + cropHpt };
+      });
+
+      // Embed center-cropped page boxes so bleed/cut trims artwork instead of scaling it.
+      const embedded = await outDoc.embedPages(srcPages, cropBoxes);
       perItemEmbeddedPages.set(itId, embedded);
     }
     for (const asset of itemAssets) await ensureEmbeddedPagesForItem(asset);

@@ -148,9 +148,19 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
       await job.log(LogLevel.Info, `artRotation=EvenPages: artwork pages 2,4,6,... will be rotated 180°.`);
     }
 
-    // embed pages
-    const idxs = Array.from({length:pageCount}, (_,i)=>i);
-    const embedded = await outDoc.embedPdf(src, idxs);
+    // embed pages as centered crops so bleed/cut trims the source art instead of scaling it
+    const srcPages = srcDoc.getPages();
+    const targetWpt = Math.max(0.01, placeW);
+    const targetHpt = Math.max(0.01, placeH);
+    const cropBoxes = srcPages.map((sp:any) => {
+      const { width: srcWpt, height: srcHpt } = sp.getSize();
+      const cropWpt = Math.min(targetWpt, srcWpt);
+      const cropHpt = Math.min(targetHpt, srcHpt);
+      const left = Math.max(0, (srcWpt - cropWpt) / 2);
+      const bottom = Math.max(0, (srcHpt - cropHpt) / 2);
+      return { left, right: left + cropWpt, bottom, top: bottom + cropHpt };
+    });
+    const embedded = await outDoc.embedPages(srcPages, cropBoxes);
 
     // track output sheet index (0-based) to detect odd sheets for duplex
     let outSheetIndex = 0;
