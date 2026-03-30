@@ -1,50 +1,62 @@
-Parse the attached purchase order and generate the workflow response JSON.
+<user_message>
+Parse the attached purchase order PDF and the two JSON lists of ProductSKU's and KitSKU's with their corresponding CustomerProductIdentifiers (Customer Provided SKU's in the PO on each line) to generate the workflow response. Also attached are the available shipping methods, please use the code for the method requested, and for now just use FEDEX.
 
-PRODUCTS CATALOG:
-[Job.DataSet:Products]
+**If there is however artwork links in the pdf for each line item, use the links as the artworksingle for the print item please instead, not the anchor text but the actual href on the "File Link"**
 
-KITS CATALOG:
-[Job.DataSet:Kits]
+The names of the files for the line items are appended to the end of this message. They were extracted from the Purchase Order PDF attached to this request, but the links may get stripped out when you read it. Please assign the links to the appropriate line. They are the hyperlinks to the "File Link" link text.
+
+Each line item requires an artworkSingle, there will likely be duplicates in this list because appending a timestamp to the end of them is for some reason creating another file name in this list, but only the latest one is real, so usually the pattern will be 1(old),1,2(old),2,3(old),3 etc.
+
+each filename should be placed in the artworkLocal key of the orderItem.
+
+IMPORTANT: In the template below, (( and )) represent JSON array brackets. Your output must use actual square brackets for valid JSON.
 
 Return this exact structure:
 {
   "APICall": {
-    "externalOrderID": "<PO number>",
-    "notes": "<general order notes>",
-    "shippingMethod": "<shipping method or empty string>",
-    "shippingAddresses": [
+    "externalOrderID": "PO number from document",
+    "notes": "general order notes or empty string, include any errors with missing items from the catalog",
+    "shippingMethod": "shipping method, these will all be FedEx, we are in AZ so if they say 'pick up at warehouse' and give a ship to outside of AZ, then it isn't customer pickup",
+    "status": "{only enter NeedsAttention if an item has holdItem:true, or there is an issue like missing item from catalog, otherwise it should be Production}",
+    "shippingAddresses": ((
       {
-        "company": "<company>",
-        "attention": "<contact name>",
-        "address1": "<address line 1>",
-        "address2": "<address line 2 or empty>",
-        "city": "<city>",
-        "state": "<state abbrev>",
-        "zip": "<zip>",
-        "telephone": "<phone or empty>"
+        "company": "company name",
+        "attention": "contact name **cannot be empty, this will be the second line of the shipping address that is given after company in the PO pdf, just bs it if not given in that spot**",
+        "address1": "address line 1",
+        "address2": "address line 2 or empty",
+        "city": "city",
+        "state": "state abbrev",
+        "zip": "zip code",
+        "telephone": "phone or empty"
       }
-    ],
-    "orderItems": [
+    )),
+    "orderItems": ((
       {
-        "productSKU": "<from Products catalog or empty>",
-        "kitSKU": "<from Kits catalog or empty>",
-        "name": "<product/kit name from catalog>",
-        "quantity": <integer>,
-        "artworkSingle": "",
-        "orderItemNotes": "<notes from customerProductId if any>",
-        "shippingAddresses": []
+        "productSKU": "sku from Products json if matched and not using cpi, else empty string",
+        "kitSKU": "sku from Kits json if matched and not using cpi, else empty string",
+        "cpi": "the client externalProductId when using CPI injection, else omit or empty string",
+        "cpiQuantity": "pack size from quantityPrices tier when ordering packs via CPI, else omit",
+        "name": "description from the PO",
+        "quantity": "INT — if using cpi+cpiQuantity this is the NUMBER OF PACKS (not total units). Otherwise it is the total unit quantity. Example: 10 packs of 500 → quantity:10, cpiQuantity:500",
+        "artworkSingle": "{filename}",
+        "artworkLocal": "",
+        "orderItemNotes": "notes from externalProductId (if none don't include 'notes:') and include the externalProductId that was mapped to this sku",
+        "shippingAddresses": (()),
+        "status": "{only enter NeedsAttention if the item has holdItem:true}"
       }
-    ]
+    ))
   },
-  "Alert": null
+  "Alert": null,
+  "Confirmation": String like "PO 234898 has been successfully received into the system"
 }
 
-If any line items are unmapped OR have holdItem=true, replace null with:
+If any line items are unmapped OR have holdItem=true, replace "Alert": null with the following in addition to the correct APICall body to inject the items that do pass:
 {
   "Alert": {
-    "Subject": "Order [PO#] Requires Attention - [count] Issue(s)",
-    "Message": "The following items require attention:\n\n[For each issue:]\n- Item: [description]\n  Client SKU: [their code]\n  Reason: [UNMAPPED or HOLD ITEM]\n  Notes: [notes from customerProductId if hold item]\n\n[If unmapped:] Please add missing products to the catalog.\n[If hold items:] Prepress action required before production."
+    "Subject": "Order PO_NUMBER Requires Attention - COUNT Issue(s)",
+    "Message": "The following items require attention:\n\n- Item: DESCRIPTION\n  Client SKU: THEIR_CODE\n  Reason: UNMAPPED or HOLD ITEM\n  Notes: NOTES_IF_HOLD_ITEM\n\nPlease add missing products to the catalog or take prepress action as required."
   }
 }
 
-Output ONLY the JSON object.
+Output ONLY valid JSON with proper square brackets for arrays. No markdown, no code blocks.
+</user_message>

@@ -55,16 +55,25 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
 
     // Extract binding edge (default to Left if not specified)
     const bindingEdge: BindingEdge = (orderItems[0]?.bindingEdge as BindingEdge) || 'Left';
+    const impositionCutAndStack =
+      isTrueFlag(payload?.impositionCutAndStack) ||
+      orderItems.some(it => isTrueFlag(it?.impositionCutAndStack));
+
     await job.log(LogLevel.Info, `Binding edge: ${bindingEdge}`);
+    if (impositionCutAndStack) {
+      await job.log(LogLevel.Info, 'impositionCutAndStack=true: using position-major cut-and-stack page ordering.');
+    }
 
     // NEW: respect requiredPositions by padding with blanks up to that count
-    const requiredCount = Math.max(orderItems.length, +(payload?.requiredPositions || 0) || orderItems.length);
+    let requiredCount = Math.max(orderItems.length, +(payload?.requiredPositions || 0) || orderItems.length);
     if (payload?.requiredPositions) {
       await job.log(
         LogLevel.Info,
         `requiredPositions present: ${payload.requiredPositions}; will impose ${requiredCount} positions (${orderItems.length} item(s) + ${Math.max(0, requiredCount - orderItems.length)} blank).`
       );
     }
+
+    const bestFitEnabled = orderItems.some(it => !!it.bestFit);
 
     // ---- Diagnostics ----
     const maxCutWIn = Math.max(...orderItems.map(it => +it.cutWidthInches || 0));
@@ -99,6 +108,45 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     );
     await job.log(LogLevel.Info, 'Outer sheet margins set to 0.125".');
 
+    if (bestFitEnabled) {
+      const primaryCapacity = maxPlacementsForSheet(sheetWIn, sheetHIn, orderItems);
+      const oppositeCapacity = maxPlacementsForSheet(sheetHIn, sheetWIn, orderItems);
+      const useOpposite = oppositeCapacity > primaryCapacity;
+      const chosenCapacity = useOpposite ? oppositeCapacity : primaryCapacity;
+
+      await job.log(
+        LogLevel.Info,
+        `bestFit=true: comparing ${sheetWIn}x${sheetHIn} (${primaryCapacity} up) vs ${sheetHIn}x${sheetWIn} (${oppositeCapacity} up); using ${useOpposite ? `${sheetHIn}x${sheetWIn}` : `${sheetWIn}x${sheetHIn}`}.`
+      );
+
+      if (useOpposite) {
+        const priorW = sheetWIn;
+        sheetWIn = sheetHIn;
+        sheetHIn = priorW;
+        actualOrientation = sheetHIn > sheetWIn ? 'portrait' : 'landscape';
+      }
+
+      if (chosenCapacity > requiredCount) {
+        await job.log(
+          LogLevel.Info,
+          `bestFit=true: increasing imposed positions from ${requiredCount} to full-up capacity ${chosenCapacity}.`
+        );
+        requiredCount = chosenCapacity;
+      }
+    }
+
+    if (impositionCutAndStack) {
+      const cutAndStackCapacity = maxPlacementsForSheet(sheetWIn, sheetHIn, orderItems);
+      if (!cutAndStackCapacity) return job.fail('Cut and stack imposition could not determine positions per sheet');
+      if (requiredCount !== cutAndStackCapacity) {
+        await job.log(
+          LogLevel.Info,
+          `impositionCutAndStack=true: overriding imposed positions from ${requiredCount} to full-up capacity ${cutAndStackCapacity}.`
+        );
+      }
+      requiredCount = cutAndStackCapacity;
+    }
+
     const layout = planLayout(sheetWIn, sheetHIn, orderItems, requiredCount);
     if (!layout) return job.fail(`Items/positions cannot fit on ${sheetWIn}x${sheetHIn} (${actualOrientation}) with current gaps and 0.125" margins`);
 
@@ -126,7 +174,17 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
           throw new Error(`Failed to fetch art for item ${it.id}: ${e?.message || e}`);
         }
       }
-      const srcDoc = await PDFDocument.load(bytes);
+      let srcDoc = await PDFDocument.load(bytes);
+      const shouldRotate = shouldAutoCorrectOrientation(it, srcDoc);
+      if (shouldRotate) {
+        const firstPage = srcDoc.getPages()[0];
+        const srcBox = firstPage ? getSourcePageBox(firstPage) : { width: 0, height: 0 };
+        await job.log(
+          LogLevel.Info,
+          `Item ${it.id}: autoCorrectArtOrientation=true; rotating source by 90° (cut=${+it.cutWidthInches || 0}x${+it.cutHeightInches || 0}, pdf=${(srcBox.width / PT).toFixed(4)}x${(srcBox.height / PT).toFixed(4)} in).`
+        );
+        srcDoc = await rotateDocument90(srcDoc);
+      }
       const pageCount = srcDoc.getPageCount();
       return { it, bytes, srcDoc, pageCount };
     }));
@@ -152,11 +210,11 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
 
       const srcPages = itAsset.srcDoc.getPages();
       const cropBoxes = srcPages.map((sp: any) => {
-        const { width: srcWpt, height: srcHpt } = sp.getSize();
-        const cropWpt = Math.min(targetWpt, srcWpt);
-        const cropHpt = Math.min(targetHpt, srcHpt);
-        const left = Math.max(0, (srcWpt - cropWpt) / 2);
-        const bottom = Math.max(0, (srcHpt - cropHpt) / 2);
+        const srcBox = getSourcePageBox(sp);
+        const cropWpt = Math.min(targetWpt, srcBox.width);
+        const cropHpt = Math.min(targetHpt, srcBox.height);
+        const left = srcBox.x + (srcBox.width - cropWpt) / 2;
+        const bottom = srcBox.y + (srcBox.height - cropHpt) / 2;
         return { left, right: left + cropWpt, bottom, top: bottom + cropHpt };
       });
 
@@ -170,8 +228,8 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     // When partialFillAvailablePositions is true, cycle through available items to fill empty positions
     // When false (default), empty positions remain blank (null itemIdx)
     const partialFill = !!payload?.partialFillAvailablePositions;
-    
-    const placements: Array<{ r: number; c: number; itemIdx: number | null }> = [];
+
+    const placements: Placement[] = [];
     for (let r = 0; r < layout.rows; r++) {
       for (let c = 0; c < layout.cols; c++) {
         const idx = r * layout.cols + c;
@@ -195,6 +253,9 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
         LogLevel.Info,
         `partialFillAvailablePositions=true: Cycling ${orderItems.length} item(s) to fill ${requiredCount} positions.`
       );
+    }
+    if (impositionCutAndStack && partialFill) {
+      await job.log(LogLevel.Info, 'impositionCutAndStack=true: ignoring partialFillAvailablePositions because page order is driven by the cut-and-stack mapping.');
     }
 
     // Cover pages by includeCoverSheet + inksBack
@@ -226,13 +287,30 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     // Get batchId from payload
     const batchId = String(payload?.batchId ?? '');
 
+    const cutAndStackPages = impositionCutAndStack ? buildCutAndStackPageRefs(itemAssets) : [];
+    const cutAndStackPlan = impositionCutAndStack
+      ? buildCutAndStackPlan(cutAndStackPages.length, layout.cols * layout.rows)
+      : null;
+    if (cutAndStackPlan) {
+      await job.log(
+        LogLevel.Info,
+        `Cut and stack plan: ${cutAndStackPlan.perSheet} position(s) per sheet, ${cutAndStackPages.length} source page(s), ${cutAndStackPlan.sheetCount} imposed sheet(s).`
+      );
+    }
+
     if (numCoverPages >= 1)
       await createCoverPage(outDoc, layout, orderItems, itemAssets, perItemEmbeddedPages,
-        placements, 0, font, boldFont, /*flip*/ false, defaultCutWpt, defaultCutHpt, bindingEdge, barcodeCache, batchId);
+        cutAndStackPlan
+          ? buildCutAndStackSheetPlacements(layout, cutAndStackPages, 0, cutAndStackPlan.sheetCount)
+          : buildStaticSheetPlacements(placements, 0),
+        font, boldFont, /*flip*/ false, defaultCutWpt, defaultCutHpt, bindingEdge, barcodeCache, batchId);
 
     if (numCoverPages === 2)
       await createCoverPage(outDoc, layout, orderItems, itemAssets, perItemEmbeddedPages,
-        placements, 1, font, boldFont, /*flip*/ true, defaultCutWpt, defaultCutHpt, bindingEdge, barcodeCache, batchId);
+        cutAndStackPlan
+          ? buildCutAndStackSheetPlacements(layout, cutAndStackPages, 1, cutAndStackPlan.sheetCount)
+          : buildStaticSheetPlacements(placements, 1),
+        font, boldFont, /*flip*/ true, defaultCutWpt, defaultCutHpt, bindingEdge, barcodeCache, batchId);
 
     // Check if sheet-level bug is requested (SheetLongEdge or SheetShortEdge)
     const sheetBugPosition = String(orderItems[0]?.bugPosition || '').toLowerCase();
@@ -243,111 +321,20 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
       await job.log(LogLevel.Info, `Sheet-level gutter bug enabled: ${sheetBugPosition}`);
     }
 
-// Production pages
-for (let p = 0; p < maxPages; p++) {
-  const page = outDoc.addPage([sheetWpt, sheetHpt]);
-  const flipPositionsThisPage = anyBackInks && (p % 2 === 1);
+    const productionSheetCount = cutAndStackPlan ? cutAndStackPlan.sheetCount : maxPages;
+    for (let sheetIdx = 0; sheetIdx < productionSheetCount; sheetIdx++) {
+      const page = outDoc.addPage([sheetWpt, sheetHpt]);
+      const flipPositionsThisPage = anyBackInks && (sheetIdx % 2 === 1);
+      const sheetPlacements = cutAndStackPlan
+        ? buildCutAndStackSheetPlacements(layout, cutAndStackPages, sheetIdx, cutAndStackPlan.sheetCount)
+        : buildStaticSheetPlacements(placements, sheetIdx);
 
-  // --- BUG LAYER (draw first so it's under crops & art) ---
-  // Only draw per-item bugs if NOT using sheet-level bug
-  if (!isSheetLevelBug) {
-    for (const plc of placements) {
-      if (plc.itemIdx === null) continue;
-      const asset = itemAssets[plc.itemIdx];
-      if (p >= asset.pageCount) continue; // keep behavior the same as before
-
-      const it = asset.it;
-
-      const cutWpt_i  = pt(+it.cutWidthInches  || 0);
-      const cutHpt_i  = pt(+it.cutHeightInches || 0);
-      const bleedWpt_i = pt((+it.bleedWidthInches  || 0) || (+it.cutWidthInches  || 0));
-      const bleedHpt_i = pt((+it.bleedHeightInches || 0) || (+it.cutHeightInches || 0));
-      const hasBleed_i = bleedWpt_i > cutWpt_i || bleedHpt_i > cutHpt_i;
-      const placeW = hasBleed_i ? bleedWpt_i : cutWpt_i;
-      const placeH = hasBleed_i ? bleedHpt_i : cutHpt_i;
-
-      const { rEff, cEff } = getEffectivePosition(plc.r, plc.c, layout, bindingEdge, flipPositionsThisPage);
-      const cellCenterX = layout.offX + cEff * (layout.cellWpt + layout.gapHpt) + layout.cellWpt / 2;
-      const cellCenterY = layout.offY + rEff * (layout.cellHpt + layout.gapVpt) + layout.cellHpt / 2;
-
-      await drawGutterBug(
-        page, outDoc, it, layout, rEff, cEff, placeW, placeH, sheetWpt, sheetHpt, barcodeCache, font
+      await renderProductionSheet(
+        page, outDoc, layout, sheetPlacements, orderItems, itemAssets, perItemEmbeddedPages,
+        bindingEdge, flipPositionsThisPage, defaultCutWpt, defaultCutHpt,
+        sheetWpt, sheetHpt, barcodeCache, font, isSheetLevelBug, useSheetLongEdge
       );
     }
-  }
-
-  // --- SHEET-LEVEL BUG (if enabled) ---
-  if (isSheetLevelBug && orderItems[0]?.includeGutterBug) {
-    await drawSheetGutterBug(
-      page, outDoc, orderItems[0], layout, sheetWpt, sheetHpt, barcodeCache, font, useSheetLongEdge
-    );
-  }
-
-  // --- CROPS (middle layer) ---
-  for (const plc of placements) {
-    const hasItem = plc.itemIdx !== null;
-    const cutWpt_i = hasItem ? pt(+orderItems[plc.itemIdx!].cutWidthInches || 0) : defaultCutWpt;
-    const cutHpt_i = hasItem ? pt(+orderItems[plc.itemIdx!].cutHeightInches || 0) : defaultCutHpt;
-
-    const { rEff, cEff } = getEffectivePosition(plc.r, plc.c, layout, bindingEdge, flipPositionsThisPage);
-    const cellCenterX = layout.offX + cEff * (layout.cellWpt + layout.gapHpt) + layout.cellWpt / 2;
-    const cellCenterY = layout.offY + rEff * (layout.cellHpt + layout.gapVpt) + layout.cellHpt / 2;
-
-    const isLeftEdge = cEff === 0, isRightEdge = cEff === layout.cols - 1;
-    const isBottomEdge = rEff === 0, isTopEdge = rEff === layout.rows - 1;
-
-    drawIndividualCrops(
-      page, cellCenterX, cellCenterY, cutWpt_i, cutHpt_i,
-      0.25, 0.125, 0.5, isLeftEdge, isRightEdge, isBottomEdge, isTopEdge, layout.gapHpt, layout.gapVpt
-    );
-  }
-
-  // --- ARTWORK (top layer) + in‑art barcode ---
-  for (const plc of placements) {
-    if (plc.itemIdx === null) continue;
-    const asset = itemAssets[plc.itemIdx];
-    if (p >= asset.pageCount) continue;
-
-    const embeddedPages = perItemEmbeddedPages.get(asset.it.id as number)!;
-    const it = asset.it;
-
-    const cutWpt_i = pt(+it.cutWidthInches || 0);
-    const cutHpt_i = pt(+it.cutHeightInches || 0);
-    const bleedWpt_i = pt((+it.bleedWidthInches || 0) || (+it.cutWidthInches || 0));
-    const bleedHpt_i = pt((+it.bleedHeightInches || 0) || (+it.cutHeightInches || 0));
-    const hasBleed_i = bleedWpt_i > cutWpt_i || bleedHpt_i > cutHpt_i;
-    const placeW = hasBleed_i ? bleedWpt_i : cutWpt_i;
-    const placeH = hasBleed_i ? bleedHpt_i : cutHpt_i;
-
-    const ep = embeddedPages[Math.min(p, embeddedPages.length - 1)];
-
-    const { rEff, cEff } = getEffectivePosition(plc.r, plc.c, layout, bindingEdge, flipPositionsThisPage);
-    const cellCenterX = layout.offX + cEff * (layout.cellWpt + layout.gapHpt) + layout.cellWpt / 2;
-    const cellCenterY = layout.offY + rEff * (layout.cellHpt + layout.gapVpt) + layout.cellHpt / 2;
-
-    const rotDeg = rotationForPage(it, rEff, cEff, flipPositionsThisPage, p);
-
-    const { shiftX, shiftY } = getShiftAdjustments(bindingEdge, flipPositionsThisPage, +it.imageShiftX, +it.imageShiftY);
-    const { sx, sy } = preRotationShiftFor(rotDeg, shiftX, shiftY);
-
-    const x0 = cellCenterX - placeW / 2 + sx;
-    const y0 = cellCenterY - placeH / 2 + sy;
-    const { x, y } = adjustXYForRotation(x0, y0, placeW, placeH, rotDeg);
-
-    page.drawPage(ep, { x, y, width: placeW, height: placeH, rotate: degrees(rotDeg) });
-
-    // in‑art barcode (on configured page only)
-    const cfgPage = Math.floor(+it.inArtBarcodePage || 0);
-    let targetIdx = (cfgPage > 0) ? (cfgPage - 1) : (asset.pageCount - 1);
-    targetIdx = clamp(targetIdx, 0, asset.pageCount - 1);
-    const shouldDraw = (p === targetIdx);
-
-    await drawInArtBarcodeAtTargetPage(
-      page, outDoc, it, shouldDraw, rotDeg, x0, y0,
-      cutWpt_i, cutHpt_i, bleedWpt_i, bleedHpt_i, barcodeCache, font
-    );
-  }
-}
 
 
     // Save & send
@@ -392,11 +379,94 @@ type Layout = {
 };
 
 type BindingEdge = 'Left' | 'Right' | 'Top' | 'Bottom';
+type Placement = { r: number; c: number; itemIdx: number | null };
+type SheetPlacement = Placement & { artPageIndex: number | null };
+type CutAndStackPageRef = { itemIdx: number; artPageIndex: number };
+
+function isTrueFlag(value: any) {
+  return value === true || String(value ?? '').trim().toLowerCase() === 'true';
+}
 
 function gridFit(availW: number, availH: number, cellW: number, cellH: number, gapH: number, gapV: number) {
   const colsMax = Math.max(1, Math.floor((availW + gapH) / (cellW + gapH)));
   const rowsMax = Math.max(1, Math.floor((availH + gapV) / (cellH + gapV)));
   return { colsMax, rowsMax };
+}
+
+function maxPlacementsForSheet(sheetWIn: number, sheetHIn: number, orderItems: any[]): number {
+  const maxCutWIn = Math.max(...orderItems.map(it => +it.cutWidthInches || 0));
+  const maxCutHIn = Math.max(...orderItems.map(it => +it.cutHeightInches || 0));
+  if (!maxCutWIn || !maxCutHIn) return 0;
+
+  const gapHIn = Math.max(...orderItems.map(it => +it.impositionMarginHorizontal || 0), 0);
+  const gapVIn = Math.max(...orderItems.map(it => +it.impositionMarginVertical || 0), 0);
+  const outerMarginHIn = 0.125, outerMarginVIn = 0.125;
+  const availWIn = sheetWIn - 2 * outerMarginHIn;
+  const availHIn = sheetHIn - 2 * outerMarginVIn;
+  if (availWIn <= 0 || availHIn <= 0) return 0;
+
+  const { colsMax, rowsMax } = gridFit(availWIn, availHIn, maxCutWIn, maxCutHIn, gapHIn, gapVIn);
+  return colsMax * rowsMax;
+}
+
+type AxisOrientation = 'portrait' | 'landscape' | 'square';
+
+function orientationFromDimensions(width: number, height: number): AxisOrientation {
+  if (width <= 0 || height <= 0) return 'square';
+  const eps = 0.0001;
+  if (Math.abs(width - height) <= eps) return 'square';
+  return height > width ? 'portrait' : 'landscape';
+}
+
+function shouldAutoCorrectOrientation(it: any, srcDoc: PDFDocument): boolean {
+  if (!it?.autoCorrectArtOrientation) return false;
+
+  const cutOrientation = orientationFromDimensions(+it.cutWidthInches || 0, +it.cutHeightInches || 0);
+  if (cutOrientation === 'square') return false;
+
+  const firstPage = srcDoc.getPages()[0];
+  if (!firstPage) return false;
+  const srcBox = getSourcePageBox(firstPage);
+  const srcOrientation = orientationFromDimensions(srcBox.width, srcBox.height);
+
+  if (srcOrientation === 'square' || srcOrientation === cutOrientation) return false;
+  return true;
+}
+
+async function rotateDocument90(srcDoc: PDFDocument): Promise<PDFDocument> {
+  const corrected = await PDFDocument.create();
+  const srcPages = srcDoc.getPages();
+
+  for (const sp of srcPages) {
+    const srcBox = getSourcePageBox(sp);
+    const embedded = await corrected.embedPage(sp, {
+      left: srcBox.x,
+      right: srcBox.x + srcBox.width,
+      bottom: srcBox.y,
+      top: srcBox.y + srcBox.height
+    });
+    const page = corrected.addPage([srcBox.height, srcBox.width]);
+    page.drawPage(embedded, {
+      x: srcBox.height,
+      y: 0,
+      width: srcBox.width,
+      height: srcBox.height,
+      rotate: degrees(90)
+    });
+  }
+
+  // Materialize embedded page XObjects before this doc is used as a source again.
+  const correctedBytes = await corrected.save({ useObjectStreams: true });
+  return PDFDocument.load(correctedBytes);
+}
+
+function getSourcePageBox(sp: any) {
+  const cb = sp?.getCropBox?.();
+  if (cb && cb.width > 0 && cb.height > 0) return cb;
+  const mb = sp?.getMediaBox?.();
+  if (mb && mb.width > 0 && mb.height > 0) return mb;
+  const sz = sp.getSize();
+  return { x: 0, y: 0, width: sz.width, height: sz.height };
 }
 
 /** Crops */
@@ -636,6 +706,67 @@ function planLayout(
     waste,
     orientation: sheetHIn >= sheetWIn ? 'portrait' : 'landscape'
   };
+}
+
+function buildCutAndStackPlan(totalPages: number, positionsPerSheet: number) {
+  const perSheet = Math.max(1, positionsPerSheet);
+  const sheetCount = totalPages > 0 ? Math.ceil(totalPages / perSheet) : 0;
+  return {
+    perSheet,
+    sheetCount,
+    getSourceIndex(sheetIndex: number, positionIndex: number) {
+      if (sheetIndex < 0 || positionIndex < 0 || sheetIndex >= sheetCount) return -1;
+      const sourceIndex = positionIndex * sheetCount + sheetIndex;
+      return sourceIndex < totalPages ? sourceIndex : -1;
+    }
+  };
+}
+
+function buildStaticSheetPlacements(placements: Placement[], artPageIndex: number): SheetPlacement[] {
+  return placements.map(plc => ({
+    r: plc.r,
+    c: plc.c,
+    itemIdx: plc.itemIdx,
+    artPageIndex: plc.itemIdx === null ? null : artPageIndex
+  }));
+}
+
+function buildCutAndStackPageRefs(itemAssets: any[]): CutAndStackPageRef[] {
+  const refs: CutAndStackPageRef[] = [];
+  for (let itemIdx = 0; itemIdx < itemAssets.length; itemIdx++) {
+    const asset = itemAssets[itemIdx];
+    for (let artPageIndex = 0; artPageIndex < asset.pageCount; artPageIndex++) {
+      refs.push({ itemIdx, artPageIndex });
+    }
+  }
+  return refs;
+}
+
+function buildCutAndStackSheetPlacements(
+  layout: Layout,
+  pageRefs: CutAndStackPageRef[],
+  sheetIndex: number,
+  sheetCount: number
+): SheetPlacement[] {
+  const plan = buildCutAndStackPlan(pageRefs.length, layout.cols * layout.rows);
+  const effectiveSheetCount = sheetCount > 0 ? sheetCount : plan.sheetCount;
+  const placements: SheetPlacement[] = [];
+
+  for (let r = 0; r < layout.rows; r++) {
+    for (let c = 0; c < layout.cols; c++) {
+      const positionIndex = r * layout.cols + c;
+      const sourceIndex = effectiveSheetCount > 0 ? positionIndex * effectiveSheetCount + sheetIndex : -1;
+      const ref = sourceIndex >= 0 && sourceIndex < pageRefs.length ? pageRefs[sourceIndex] : null;
+      placements.push({
+        r,
+        c,
+        itemIdx: ref ? ref.itemIdx : null,
+        artPageIndex: ref ? ref.artPageIndex : null
+      });
+    }
+  }
+
+  return placements;
 }
 
 /** 0°/180° rotation rule */
@@ -1147,6 +1278,124 @@ async function drawSheetGutterBug(
   }
 }
 
+async function renderProductionSheet(
+  page: any,
+  outDoc: PDFDocument,
+  layout: Layout,
+  placements: SheetPlacement[],
+  orderItems: any[],
+  itemAssets: any[],
+  perItemEmbeddedPages: Map<number, any[]>,
+  bindingEdge: BindingEdge,
+  flipPositionsThisPage: boolean,
+  defaultCutWpt: number,
+  defaultCutHpt: number,
+  sheetWpt: number,
+  sheetHpt: number,
+  barcodeCache: Map<string, any>,
+  font: any,
+  isSheetLevelBug: boolean,
+  useSheetLongEdge: boolean
+) {
+  // --- BUG LAYER (draw first so it's under crops & art) ---
+  if (!isSheetLevelBug) {
+    for (const plc of placements) {
+      if (plc.itemIdx === null || plc.artPageIndex === null) continue;
+      const asset = itemAssets[plc.itemIdx];
+      if (plc.artPageIndex >= asset.pageCount) continue;
+
+      const it = asset.it;
+      const cutWpt_i = pt(+it.cutWidthInches || 0);
+      const cutHpt_i = pt(+it.cutHeightInches || 0);
+      const bleedWpt_i = pt((+it.bleedWidthInches || 0) || (+it.cutWidthInches || 0));
+      const bleedHpt_i = pt((+it.bleedHeightInches || 0) || (+it.cutHeightInches || 0));
+      const hasBleed_i = bleedWpt_i > cutWpt_i || bleedHpt_i > cutHpt_i;
+      const placeW = hasBleed_i ? bleedWpt_i : cutWpt_i;
+      const placeH = hasBleed_i ? bleedHpt_i : cutHpt_i;
+
+      const { rEff, cEff } = getEffectivePosition(plc.r, plc.c, layout, bindingEdge, flipPositionsThisPage);
+      await drawGutterBug(
+        page, outDoc, it, layout, rEff, cEff, placeW, placeH, sheetWpt, sheetHpt, barcodeCache, font
+      );
+    }
+  }
+
+  // --- SHEET-LEVEL BUG (if enabled) ---
+  if (isSheetLevelBug && orderItems[0]?.includeGutterBug) {
+    await drawSheetGutterBug(
+      page, outDoc, orderItems[0], layout, sheetWpt, sheetHpt, barcodeCache, font, useSheetLongEdge
+    );
+  }
+
+  // --- CROPS (middle layer) ---
+  for (const plc of placements) {
+    const hasItem = plc.itemIdx !== null;
+    const cutWpt_i = hasItem ? pt(+orderItems[plc.itemIdx!].cutWidthInches || 0) : defaultCutWpt;
+    const cutHpt_i = hasItem ? pt(+orderItems[plc.itemIdx!].cutHeightInches || 0) : defaultCutHpt;
+
+    const { rEff, cEff } = getEffectivePosition(plc.r, plc.c, layout, bindingEdge, flipPositionsThisPage);
+    const cellCenterX = layout.offX + cEff * (layout.cellWpt + layout.gapHpt) + layout.cellWpt / 2;
+    const cellCenterY = layout.offY + rEff * (layout.cellHpt + layout.gapVpt) + layout.cellHpt / 2;
+
+    const isLeftEdge = cEff === 0, isRightEdge = cEff === layout.cols - 1;
+    const isBottomEdge = rEff === 0, isTopEdge = rEff === layout.rows - 1;
+
+    drawIndividualCrops(
+      page, cellCenterX, cellCenterY, cutWpt_i, cutHpt_i,
+      0.25, 0.125, 0.5, isLeftEdge, isRightEdge, isBottomEdge, isTopEdge, layout.gapHpt, layout.gapVpt
+    );
+  }
+
+  // --- ARTWORK (top layer) + in‑art barcode ---
+  for (const plc of placements) {
+    if (plc.itemIdx === null || plc.artPageIndex === null) continue;
+    const asset = itemAssets[plc.itemIdx];
+    if (plc.artPageIndex >= asset.pageCount) continue;
+
+    const embeddedPages = perItemEmbeddedPages.get(asset.it.id as number)!;
+    const it = asset.it;
+
+    const cutWpt_i = pt(+it.cutWidthInches || 0);
+    const cutHpt_i = pt(+it.cutHeightInches || 0);
+    const bleedWpt_i = pt((+it.bleedWidthInches || 0) || (+it.cutWidthInches || 0));
+    const bleedHpt_i = pt((+it.bleedHeightInches || 0) || (+it.cutHeightInches || 0));
+    const hasBleed_i = bleedWpt_i > cutWpt_i || bleedHpt_i > cutHpt_i;
+    const placeW = hasBleed_i ? bleedWpt_i : cutWpt_i;
+    const placeH = hasBleed_i ? bleedHpt_i : cutHpt_i;
+
+    const ep = embeddedPages[Math.min(plc.artPageIndex, embeddedPages.length - 1)];
+
+    const { rEff, cEff } = getEffectivePosition(plc.r, plc.c, layout, bindingEdge, flipPositionsThisPage);
+    const cellCenterX = layout.offX + cEff * (layout.cellWpt + layout.gapHpt) + layout.cellWpt / 2;
+    const cellCenterY = layout.offY + rEff * (layout.cellHpt + layout.gapVpt) + layout.cellHpt / 2;
+
+    const rotDeg = rotationForPage(it, rEff, cEff, flipPositionsThisPage, plc.artPageIndex);
+
+    const { shiftX, shiftY } = getShiftAdjustments(bindingEdge, flipPositionsThisPage, +it.imageShiftX, +it.imageShiftY);
+    const { sx, sy } = preRotationShiftFor(rotDeg, shiftX, shiftY);
+
+    const bleedX0 = cellCenterX - placeW / 2 + sx;
+    const bleedY0 = cellCenterY - placeH / 2 + sy;
+    const drawW = Math.min(placeW, ep.width || placeW);
+    const drawH = Math.min(placeH, ep.height || placeH);
+    const artX0 = bleedX0 + (placeW - drawW) / 2;
+    const artY0 = bleedY0 + (placeH - drawH) / 2;
+    const { x, y } = adjustXYForRotation(artX0, artY0, drawW, drawH, rotDeg);
+
+    page.drawPage(ep, { x, y, width: drawW, height: drawH, rotate: degrees(rotDeg) });
+
+    const cfgPage = Math.floor(+it.inArtBarcodePage || 0);
+    let targetIdx = (cfgPage > 0) ? (cfgPage - 1) : (asset.pageCount - 1);
+    targetIdx = clamp(targetIdx, 0, asset.pageCount - 1);
+    const shouldDraw = (plc.artPageIndex === targetIdx);
+
+    await drawInArtBarcodeAtTargetPage(
+      page, outDoc, it, shouldDraw, rotDeg, bleedX0, bleedY0,
+      cutWpt_i, cutHpt_i, bleedWpt_i, bleedHpt_i, barcodeCache, font
+    );
+  }
+}
+
 /** COVER PAGE (supports blanks for crops only) */
 async function createCoverPage(
   outDoc: PDFDocument,
@@ -1154,8 +1403,7 @@ async function createCoverPage(
   orderItems: any[],
   itemAssets: any[],
   perItemEmbeddedPages: Map<number, any[]>,
-  placements: Array<{ r: number; c: number; itemIdx: number | null }>,
-  pageIndex: number,
+  placements: SheetPlacement[],
   font: any,
   boldFont: any,
   flipPositionsThisPage: boolean,
@@ -1189,9 +1437,9 @@ async function createCoverPage(
 
   // Artwork (only where present)
   for (const plc of placements) {
-    if (plc.itemIdx === null) continue;
+    if (plc.itemIdx === null || plc.artPageIndex === null) continue;
     const asset = itemAssets[plc.itemIdx];
-    if (!asset || pageIndex >= asset.pageCount) continue;
+    if (!asset || plc.artPageIndex >= asset.pageCount) continue;
 
     const embeddedPages = perItemEmbeddedPages.get(asset.it.id as number)!;
     const it = asset.it;
@@ -1204,7 +1452,7 @@ async function createCoverPage(
     const placeW = hasBleed_i ? bleedWpt_i : cutWpt_i;
     const placeH = hasBleed_i ? bleedHpt_i : cutHpt_i;
 
-    const ep = embeddedPages[Math.min(pageIndex, embeddedPages.length - 1)];
+    const ep = embeddedPages[Math.min(plc.artPageIndex, embeddedPages.length - 1)];
 
     // Apply binding edge position adjustments
     const { rEff, cEff } = getEffectivePosition(plc.r, plc.c, layout, bindingEdge, flipPositionsThisPage);
@@ -1212,17 +1460,21 @@ async function createCoverPage(
     const cellCenterX = layout.offX + cEff * (layout.cellWpt + layout.gapHpt) + layout.cellWpt / 2;
     const cellCenterY = layout.offY + rEff * (layout.cellHpt + layout.gapVpt) + layout.cellHpt / 2;
 
-    const rotDeg = rotationForPage(it, rEff, cEff, flipPositionsThisPage, pageIndex);
+    const rotDeg = rotationForPage(it, rEff, cEff, flipPositionsThisPage, plc.artPageIndex);
 
     // Get shift adjustments based on binding edge
     const { shiftX, shiftY } = getShiftAdjustments(bindingEdge, flipPositionsThisPage, +it.imageShiftX, +it.imageShiftY);
     const { sx, sy } = preRotationShiftFor(rotDeg, shiftX, shiftY);
 
-    const x0 = cellCenterX - placeW / 2 + sx;
-    const y0 = cellCenterY - placeH / 2 + sy;
+    const bleedX0 = cellCenterX - placeW / 2 + sx;
+    const bleedY0 = cellCenterY - placeH / 2 + sy;
+    const drawW = Math.min(placeW, ep.width || placeW);
+    const drawH = Math.min(placeH, ep.height || placeH);
+    const artX0 = bleedX0 + (placeW - drawW) / 2;
+    const artY0 = bleedY0 + (placeH - drawH) / 2;
 
-    const { x, y } = adjustXYForRotation(x0, y0, placeW, placeH, rotDeg);
-    page.drawPage(ep, { x, y, width: placeW, height: placeH, rotate: degrees(rotDeg) });
+    const { x, y } = adjustXYForRotation(artX0, artY0, drawW, drawH, rotDeg);
+    page.drawPage(ep, { x, y, width: drawW, height: drawH, rotate: degrees(rotDeg) });
   }
 
   // Lavender overlays (only for real items) - now with quantity, barcode, and x/y offset

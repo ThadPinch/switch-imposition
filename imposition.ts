@@ -83,7 +83,10 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     const inksBack = +((await pd('inksBack')) || 0);
     const numCoverPages = includeCoverSheet ? (inksBack===0 ? 1 : 2) : 0;
 
-    const useRepeat = impositionRepeat || (!booklet && !impositionCutAndStack);
+    if (booklet && impositionCutAndStack) return job.fail('Booklet and cut and stack cannot both be true');
+
+    const useCutAndStack = impositionCutAndStack;
+    const useRepeat = !useCutAndStack && (impositionRepeat || !booklet);
     if (!sheetW || !sheetH || !cutW || !cutH) return job.fail('Missing/invalid size parameters');
 
     // ---- plan (0.125" outer margins) ----
@@ -123,6 +126,7 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
 
     const sheetSize:[number,number] = [sheetWpt, sheetHpt];
     const perSheet = cols*rows;
+    const cutAndStackPlan = useCutAndStack ? buildCutAndStackPlan(pageCount, perSheet) : null;
     const font = await outDoc.embedFont(StandardFonts.Helvetica);
     const bold = await outDoc.embedFont(StandardFonts.HelveticaBold);
 
@@ -147,17 +151,23 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     if (String(artRotationMode).toLowerCase()==='evenpages'){
       await job.log(LogLevel.Info, `artRotation=EvenPages: artwork pages 2,4,6,... will be rotated 180°.`);
     }
+    if (cutAndStackPlan) {
+      await job.log(
+        LogLevel.Info,
+        `impositionCutAndStack=true: ${perSheet} position(s) per sheet, ${pageCount} source page(s), ${cutAndStackPlan.sheetCount} imposed sheet(s).`
+      );
+    }
 
     // embed pages as centered crops so bleed/cut trims the source art instead of scaling it
     const srcPages = srcDoc.getPages();
     const targetWpt = Math.max(0.01, placeW);
     const targetHpt = Math.max(0.01, placeH);
     const cropBoxes = srcPages.map((sp:any) => {
-      const { width: srcWpt, height: srcHpt } = sp.getSize();
-      const cropWpt = Math.min(targetWpt, srcWpt);
-      const cropHpt = Math.min(targetHpt, srcHpt);
-      const left = Math.max(0, (srcWpt - cropWpt) / 2);
-      const bottom = Math.max(0, (srcHpt - cropHpt) / 2);
+      const srcBox = getSourcePageBox(sp);
+      const cropWpt = Math.min(targetWpt, srcBox.width);
+      const cropHpt = Math.min(targetHpt, srcBox.height);
+      const left = srcBox.x + (srcBox.width - cropWpt) / 2;
+      const bottom = srcBox.y + (srcBox.height - cropHpt) / 2;
       return { left, right: left + cropWpt, bottom, top: bottom + cropHpt };
     });
     const embedded = await outDoc.embedPages(srcPages, cropBoxes);
@@ -174,7 +184,7 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
         outDoc, embedded, 0, sheetSize, cols, rows, offX, offY,
         cutWpt, cutHpt, placeW, placeH, gapHpt, gapVpt,
         orderId, lineId, quantity, batchId,
-        font, bold, useRepeat,
+        font, bold, useRepeat, useCutAndStack,
         artRotationMode, rotateFirstCR, imageShiftXIn, imageShiftYIn,
         bindingEdge, /*flipPositionsThisPage*/ false,
         barcodeCache,
@@ -187,7 +197,7 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
         outDoc, embedded, 1, sheetSize, cols, rows, offX, offY,
         cutWpt, cutHpt, placeW, placeH, gapHpt, gapVpt,
         orderId, lineId, quantity, batchId,
-        font, bold, useRepeat,
+        font, bold, useRepeat, useCutAndStack,
         artRotationMode, rotateFirstCR, imageShiftXIn, imageShiftYIn,
         bindingEdge, /*flipPositionsThisPage*/ true,
         barcodeCache,
@@ -217,9 +227,13 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
       const { shiftX, shiftY } = getShiftAdjustments(bindingEdge, flipPositionsThisPage, imageShiftXIn, imageShiftYIn);
       const { sx, sy } = preRotationShiftFor(rot, shiftX, shiftY);
 
-      const x0 = cx - placeW/2 + sx, y0 = cy - placeH/2 + sy;
-      const { x, y } = adjustXYForRotation(x0, y0, placeW, placeH, rot);
-      page.drawPage(ep, { x, y, width:placeW, height:placeH, rotate:degrees(rot) });
+      const bleedX0 = cx - placeW/2 + sx, bleedY0 = cy - placeH/2 + sy;
+      const drawW = Math.min(placeW, ep.width || placeW);
+      const drawH = Math.min(placeH, ep.height || placeH);
+      const artX0 = bleedX0 + (placeW - drawW) / 2;
+      const artY0 = bleedY0 + (placeH - drawH) / 2;
+      const { x, y } = adjustXYForRotation(artX0, artY0, drawW, drawH, rot);
+      page.drawPage(ep, { x, y, width:drawW, height:drawH, rotate:degrees(rot) });
 
       // in‑art barcode only (art layer)
       const shouldDraw = (artIdx === targetArtIndex);
@@ -228,7 +242,7 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
         { enabled: includeInArtBarcode, xIn: inArtBarcodeXIn, yIn: inArtBarcodeYIn, orderId, lineId, includeOrderNumber: includeOrderNumberWithInInArtBarcode },
         shouldDraw,
         rot,
-        x0, y0,
+        bleedX0, bleedY0,
         cutWpt, cutHpt,
         bleedWpt, bleedHpt,
         barcodeCache,
@@ -281,8 +295,55 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
 
         outSheetIndex++;
       }
-    } else if (impositionCutAndStack) {
-      return job.fail('Cut and stack imposition not yet implemented');
+    } else if (useCutAndStack && cutAndStackPlan) {
+      for (let sheetIdx=0; sheetIdx<cutAndStackPlan.sheetCount; sheetIdx++){
+        const page = outDoc.addPage(sheetSize);
+        const flipThisPage = (inksBack !== 0) && (outSheetIndex % 2 === 1);
+
+        // --- BUG LAYER (under everything) ---
+        // Only draw per-item bugs if NOT using sheet-level bug
+        if (!isSheetLevelBug) {
+          for (let r=0;r<rows;r++) for (let c=0;c<cols;c++){
+            const { rEff, cEff } = getEffectivePosition(r, c, cols, rows, bindingEdge, flipThisPage);
+            const cx = offX + cEff*(cutWpt+gapHpt) + cutWpt/2;
+            const cy = offY + rEff*(cutHpt+gapVpt) + cutHpt/2;
+            await drawGutterBug(
+              page, outDoc, sheetWpt, sheetHpt,
+              cols, rows, gapHpt, gapVpt,
+              rEff, cEff, cx, cy, placeW, placeH,
+              { include: includeGutterBug, includeBarcode, bugPosition, localArtworkPath, orderId, lineId },
+              barcodeCache, font
+            );
+          }
+        }
+
+        // --- SHEET-LEVEL BUG (if enabled) ---
+        if (isSheetLevelBug && includeGutterBug) {
+          await drawSheetGutterBug(
+            page, outDoc, sheetWpt, sheetHpt,
+            { include: includeGutterBug, includeBarcode, localArtworkPath, orderId, lineId },
+            barcodeCache, font, useSheetLongEdge
+          );
+        }
+
+        // --- CROPS (middle) ---
+        for (let r=0;r<rows;r++) for (let c=0;c<cols;c++){
+          const { rEff, cEff } = getEffectivePosition(r, c, cols, rows, bindingEdge, flipThisPage);
+          const cx = offX + cEff*(cutWpt+gapHpt) + cutWpt/2;
+          const cy = offY + rEff*(cutHpt+gapVpt) + cutHpt/2;
+          drawIndividualCrops(page, cx, cy, cutWpt, cutHpt, 0.25, 0.125, 0.5, cEff===0, cEff===cols-1, rEff===0, rEff===rows-1, gapHpt, gapVpt);
+        }
+
+        // --- ART (top) ---
+        for (let r=0;r<rows;r++) for (let c=0;c<cols;c++){
+          const positionIndex = r * cols + c;
+          const artIdx = cutAndStackPlan.getArtIndex(sheetIdx, positionIndex);
+          if (artIdx < 0) continue;
+          await placeOne(page, embedded[artIdx], r, c, flipThisPage, artIdx);
+        }
+
+        outSheetIndex++;
+      }
     } else if (booklet) {
       return job.fail('Booklet imposition not yet implemented');
     } else {
@@ -352,6 +413,29 @@ function gridFit(availW: number, availH: number, cellW: number, cellH: number, g
   const cols = Math.floor((availW + gapH) / (cellW + gapH));
   const rows = Math.floor((availH + gapV) / (cellH + gapV));
   return { cols, rows, up: cols * rows };
+}
+
+function buildCutAndStackPlan(totalPages: number, positionsPerSheet: number) {
+  const perSheet = Math.max(1, positionsPerSheet);
+  const sheetCount = Math.max(1, Math.ceil(totalPages / perSheet));
+  return {
+    perSheet,
+    sheetCount,
+    getArtIndex(sheetIndex: number, positionIndex: number) {
+      if (sheetIndex < 0 || positionIndex < 0 || sheetIndex >= sheetCount) return -1;
+      const artIdx = positionIndex * sheetCount + sheetIndex;
+      return artIdx < totalPages ? artIdx : -1;
+    }
+  };
+}
+
+function getSourcePageBox(sp: any) {
+  const cb = sp?.getCropBox?.();
+  if (cb && cb.width > 0 && cb.height > 0) return cb;
+  const mb = sp?.getMediaBox?.();
+  if (mb && mb.width > 0 && mb.height > 0) return mb;
+  const sz = sp.getSize();
+  return { x: 0, y: 0, width: sz.width, height: sz.height };
 }
 
 /** math utils (for rotation-stable in-art placement) */
@@ -943,6 +1027,7 @@ async function createCoverPage(
   quantity: number, batchId: string,
   font:any, boldFont:any,
   useRepeat:boolean,
+  useCutAndStack:boolean,
   artRotationMode:string, rotateFirstCR:boolean,
   imageShiftXIn:number, imageShiftYIn:number,
   bindingEdge: BindingEdge,
@@ -965,11 +1050,9 @@ async function createCoverPage(
 
   // art
   if (pageIndex < embeddedPages.length){
-    const ep0 = embeddedPages[pageIndex];
-
-    const place = (r:number,c:number)=>{
+    const place = (ep:any, artIdx:number, r:number, c:number)=>{
       const { rEff, cEff } = getEffectivePosition(r, c, cols, rows, bindingEdge, flipPositionsThisPage);
-      const rot = rotationForPage(artRotationMode, rotateFirstCR, rEff, cEff, flipPositionsThisPage, pageIndex);
+      const rot = rotationForPage(artRotationMode, rotateFirstCR, rEff, cEff, flipPositionsThisPage, artIdx);
 
       const cx = offX + cEff*(cutWpt+gapHpt) + cutWpt/2;
       const cy = offY + rEff*(cutHpt+gapVpt) + cutHpt/2;
@@ -977,17 +1060,32 @@ async function createCoverPage(
       const { shiftX, shiftY } = getShiftAdjustments(bindingEdge, flipPositionsThisPage, imageShiftXIn, imageShiftYIn);
       const { sx, sy } = preRotationShiftFor(rot, shiftX, shiftY);
 
-      const x0 = cx - placeW/2 + sx, y0 = cy - placeH/2 + sy;
-      const { x, y } = adjustXYForRotation(x0, y0, placeW, placeH, rot);
-      page.drawPage(ep0, { x, y, width:placeW, height:placeH, rotate:degrees(rot) });
+      const bleedX0 = cx - placeW/2 + sx, bleedY0 = cy - placeH/2 + sy;
+      const drawW = Math.min(placeW, ep.width || placeW);
+      const drawH = Math.min(placeH, ep.height || placeH);
+      const artX0 = bleedX0 + (placeW - drawW) / 2;
+      const artY0 = bleedY0 + (placeH - drawH) / 2;
+      const { x, y } = adjustXYForRotation(artX0, artY0, drawW, drawH, rot);
+      page.drawPage(ep, { x, y, width:drawW, height:drawH, rotate:degrees(rot) });
     };
 
-    if (useRepeat){
-      for (let r=0;r<rows;r++) for (let c=0;c<cols;c++) place(r,c);
-    } else {
-      let placed = pageIndex;
+    if (useCutAndStack){
+      const cutAndStackPlan = buildCutAndStackPlan(embeddedPages.length, cols * rows);
       for (let r=0;r<rows;r++) for (let c=0;c<cols;c++){
-        if (placed < embeddedPages.length){ place(r,c); placed++; }
+        const artIdx = cutAndStackPlan.getArtIndex(pageIndex, r * cols + c);
+        if (artIdx < 0) continue;
+        place(embeddedPages[artIdx], artIdx, r, c);
+      }
+    } else if (useRepeat){
+      const ep0 = embeddedPages[pageIndex];
+      for (let r=0;r<rows;r++) for (let c=0;c<cols;c++) place(ep0, pageIndex, r, c);
+    } else {
+      let artIdx = pageIndex * cols * rows;
+      for (let r=0;r<rows;r++) for (let c=0;c<cols;c++){
+        if (artIdx < embeddedPages.length){
+          place(embeddedPages[artIdx], artIdx, r, c);
+          artIdx++;
+        }
       }
     }
   }

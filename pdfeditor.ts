@@ -1,6 +1,6 @@
 /// <reference types="switch-scripting" />
 // @ts-nocheck
-import { PDFDocument } from 'pdf-lib';
+import { PDFDocument, degrees } from 'pdf-lib';
 import * as fs from 'fs/promises';
 
 /**
@@ -20,6 +20,9 @@ import * as fs from 'fs/promises';
  *        crop=8.5x11
  *        crop=11 x 8.5
  *        crop=8.5×11
+ *  - matchOrientation: OPTIONAL. Exact size string "<w>x<h>" used only to infer
+ *      desired orientation (portrait vs landscape). Pages that do not match
+ *      are rotated 90 degrees; matching pages are unchanged.
  *
  * Behavior:
  *  - Margin form: reduces page to the cropped rectangle (no scaling).
@@ -271,6 +274,50 @@ function parseCropSizeInchesToPoints(raw: string) {
   return { width: toPts(wIn), height: toPts(hIn) };
 }
 
+/** Parse orientation target syntax "<w>x<h>" and return portrait/landscape */
+function parseOrientationTarget(raw: string): 'portrait' | 'landscape' | null {
+  if (!raw) return null;
+  let s = String(raw).trim();
+  if (!s) return null;
+  s = s.replace(/^matchOrientation\s*=/i, '').trim();
+
+  const m = s.match(/^\s*([\d.]+)\s*(?:in)?\s*[x×]\s*([\d.]+)\s*(?:in)?\s*$/i);
+  if (!m) return null;
+
+  const w = Number(m[1]);
+  const h = Number(m[2]);
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return null;
+  if (w === h) return null;
+  return w > h ? 'landscape' : 'portrait';
+}
+
+/** Return displayed page orientation after considering current page rotation */
+function getDisplayedPageOrientation(page: any): 'portrait' | 'landscape' | 'square' {
+  const rot = ((Math.round(page.getRotation?.()?.angle ?? 0) % 360) + 360) % 360;
+  let w = page.getWidth();
+  let h = page.getHeight();
+  if (rot === 90 || rot === 270) { const t = w; w = h; h = t; }
+  if (w === h) return 'square';
+  return w > h ? 'landscape' : 'portrait';
+}
+
+/** Rotate pages by 90 degrees only when displayed orientation does not match target */
+function matchPagesOrientation(doc: any, target: 'portrait' | 'landscape') {
+  let rotated = 0;
+  let unchanged = 0;
+  for (const page of doc.getPages()) {
+    const current = getDisplayedPageOrientation(page);
+    if (current === 'square' || current === target) {
+      unchanged++;
+      continue;
+    }
+    const rot = ((Math.round(page.getRotation?.()?.angle ?? 0) % 360) + 360) % 360;
+    page.setRotation(degrees((rot + 90) % 360));
+    rotated++;
+  }
+  return { rotated, unchanged };
+}
+
 /** Determine whether crop string is size syntax or margins; return a discriminated union */
 function parseCropSpec(raw: string):
   | { kind: 'margins'; top: number; right: number; bottom: number; left: number }
@@ -358,6 +405,7 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     const pageRangesRaw = await pd(job, 'pageRanges');
     const pageMode = (await pd(job, 'pageMode')) || 'keep';
     const cropRaw = await pd(job, 'crop'); // OPTIONAL: margins or WxH
+    const matchOrientationRaw = await pd(job, 'matchOrientation'); // OPTIONAL: WxH for orientation target
 
     if (!pageRangesRaw || !String(pageRangesRaw).trim())
       return job.fail('Missing required private data: pageRanges');
@@ -396,6 +444,15 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
       for (const page of outDoc.getPages()) hardSetExactSize(page, cropSpec.width, cropSpec.height);
     } else if (cropRaw && String(cropRaw).trim()) {
       await log(`Warning: Could not parse 'crop' PD value: "${cropRaw}". No cropping applied.`);
+    }
+
+    // --- Optional orientation matching ---
+    const targetOrientation = parseOrientationTarget(matchOrientationRaw);
+    if (targetOrientation) {
+      const { rotated, unchanged } = matchPagesOrientation(outDoc, targetOrientation);
+      await log(`matchOrientation target=${targetOrientation}; rotated=${rotated}; unchanged=${unchanged}`);
+    } else if (matchOrientationRaw && String(matchOrientationRaw).trim()) {
+      await log(`Warning: Could not parse 'matchOrientation' PD value: "${matchOrientationRaw}". Expected "<width>x<height>" (e.g. "8.5x11").`);
     }
 
     // Save & send
