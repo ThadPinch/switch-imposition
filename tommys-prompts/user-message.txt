@@ -15,9 +15,9 @@ Return this exact structure:
 {
   "APICall": {
     "externalOrderID": "PO number from document",
-    "notes": "general order notes or empty string, include any errors with missing items from the catalog",
+    "notes": "general order notes or empty string, include any errors with missing items from the catalog, include the Required receipt date from the PO in the notes as well",
     "shippingMethod": "shipping method, these will all be FedEx, we are in AZ so if they say 'pick up at warehouse' and give a ship to outside of AZ, then it isn't customer pickup",
-    "status": "{only enter NeedsAttention if an item has holdItem:true, or there is an issue like missing item from catalog, otherwise it should be Production}",
+    "status": "{only enter NeedsAttention if an item has holdItem:true, or there is an issue like missing item from catalog, otherwise it should be New}",
     "shippingAddresses": ((
       {
         "company": "company name",
@@ -38,25 +38,35 @@ Return this exact structure:
         "cpiQuantity": "pack size from quantityPrices tier when ordering packs via CPI, else omit",
         "name": "description from the PO",
         "quantity": "INT — if using cpi+cpiQuantity this is the NUMBER OF PACKS (not total units). Otherwise it is the total unit quantity. Example: 10 packs of 500 → quantity:10, cpiQuantity:500",
-        "artworkSingle": "{filename}",
-        "artworkLocal": "",
-        "orderItemNotes": "notes from externalProductId (if none don't include 'notes:') and include the externalProductId that was mapped to this sku",
+        "artworkSingle": "{filename, if no file was provided for this line, put the string 'nofileprovided'}",
+        "artworkLocal": "" {never put anything here, always empty},
+        "orderItemNotes": "notes from externalProductId (if none don't include 'notes:') and include the externalProductId that was mapped to this sku, include the Required receipt date from the PO in the notes as well",
         "shippingAddresses": (()),
         "status": "{only enter NeedsAttention if the item has holdItem:true}"
       }
     ))
   },
-  "Alert": null,
-  "Confirmation": String like "PO 234898 has been successfully received into the system"
+  "PrepressAlert": null,
+  "CSRAlert": null,
+  "Confirmation": If all items had a filesname supplied for artwork single = String like "PO 234898 has been successfully received into the system" else String like "PO 234898 has been successfully received into the system, however artwork was not supplied for {item}"
 }
 
-If any line items are unmapped OR have holdItem=true, replace "Alert": null with the following in addition to the correct APICall body to inject the items that do pass:
+If any line items have holdItem=true AND have art provided, replace "PrepressAlert": null with the following in addition to the correct APICall body to inject the items that do pass:
 {
-  "Alert": {
+  "PrepressAlert": {
     "Subject": "Order PO_NUMBER Requires Attention - COUNT Issue(s)",
-    "Message": "The following items require attention:\n\n- Item: DESCRIPTION\n  Client SKU: THEIR_CODE\n  Reason: UNMAPPED or HOLD ITEM\n  Notes: NOTES_IF_HOLD_ITEM\n\nPlease add missing products to the catalog or take prepress action as required."
+    "Message": "The following items require attention:\n\n- Item: DESCRIPTION\n  Client SKU: THEIR_CODE\n  Reason: HOLD ITEM\n  Notes: NOTES_IF_HOLD_ITEM\n\nPlease take prepress action as required."
   }
 }
+
+If any line items are unmapped OR do not have art provided, replace "CSRAlert": null with the following in addition to the correct APICall body to inject the items that do pass:
+{
+  "CSRAlert": {
+    "Subject": "Order PO_NUMBER Requires Attention - COUNT Issue(s)",
+    "Message": "The following items require attention:\n\n- Item: DESCRIPTION\n  Client SKU: THEIR_CODE\n  Reason: UNMAPPED or HOLD ITEM\n  Notes: NOTES_IF_HOLD_ITEM\n\nPlease add missing products to the catalog or gather artwork from client."
+  }
+}
+
 
 Output ONLY valid JSON with proper square brackets for arrays. No markdown, no code blocks.
 </user_message>

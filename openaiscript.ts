@@ -714,10 +714,14 @@ function getSettingsDefinition() {
       logInfo(s, job, 'Response text length: ' + responseText.length);
       logInfo(s, job, 'Response preview: ' + responseText.substring(0, 200));
       
-      // Parse the response JSON and extract APICall, Alert, Confirmation
+      // Parse the response JSON and extract APICall, alerts, Confirmation
       var apiCallStr = '';
       var alertSubject = '';
       var alertMessage = '';
+      var prepressAlertSubject = '';
+      var prepressAlertMessage = '';
+      var csrAlertSubject = '';
+      var csrAlertMessage = '';
       var confirmationMessage = '';
       var omsResponse = '';
       var omsSuccess = false;
@@ -746,6 +750,22 @@ function getSettingsDefinition() {
           logInfo(s, job, 'Extracted Alert - Subject: ' + alertSubject);
         } else {
           logInfo(s, job, 'No Alert in response (null)');
+        }
+
+        if (responseObj.PrepressAlert && responseObj.PrepressAlert !== null) {
+          prepressAlertSubject = responseObj.PrepressAlert.Subject || '';
+          prepressAlertMessage = responseObj.PrepressAlert.Message || '';
+          logInfo(s, job, 'Extracted PrepressAlert - Subject: ' + prepressAlertSubject);
+        } else {
+          logInfo(s, job, 'No PrepressAlert in response (null)');
+        }
+
+        if (responseObj.CSRAlert && responseObj.CSRAlert !== null) {
+          csrAlertSubject = responseObj.CSRAlert.Subject || '';
+          csrAlertMessage = responseObj.CSRAlert.Message || '';
+          logInfo(s, job, 'Extracted CSRAlert - Subject: ' + csrAlertSubject);
+        } else {
+          logInfo(s, job, 'No CSRAlert in response (null)');
         }
         
         if (responseObj.Confirmation != null) {
@@ -787,10 +807,20 @@ function getSettingsDefinition() {
       await job.setPrivateData(outputKey, apiCallStr);
       await job.setPrivateData('AlertSubject', alertSubject);
       await job.setPrivateData('AlertMessage', alertMessage);
+      await job.setPrivateData('PrepressAlertSubject', prepressAlertSubject);
+      await job.setPrivateData('PrepressAlertMessage', prepressAlertMessage);
+      await job.setPrivateData('CSRAlertSubject', csrAlertSubject);
+      await job.setPrivateData('CSRAlertMessage', csrAlertMessage);
       await job.setPrivateData('Confirmation', confirmationMessage);
       await job.setPrivateData('OMSResponse', omsResponse);
       await job.setPrivateData('OMSSuccess', omsSuccess ? 'true' : 'false');
-      logInfo(s, job, 'Stored: ' + outputKey + ', AlertSubject, AlertMessage, Confirmation, OMSResponse, OMSSuccess');
+      logInfo(
+        s,
+        job,
+        'Stored: ' +
+          outputKey +
+          ', AlertSubject, AlertMessage, PrepressAlertSubject, PrepressAlertMessage, CSRAlertSubject, CSRAlertMessage, Confirmation, OMSResponse, OMSSuccess'
+      );
       
       // Send job forward - get fresh path from job
       logInfo(s, job, 'Sending job to output...');
