@@ -271,7 +271,7 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     if (anyBackInks) {
       const edgeNorm = bindingEdge.toLowerCase();
       if (edgeNorm === 'left' || edgeNorm === 'right') {
-        await job.log(LogLevel.Info, `${bindingEdge} binding: Back pages will flip columns horizontally, add 180° rotation, and invert X shift.`);
+        await job.log(LogLevel.Info, `${bindingEdge} binding: Back pages will flip columns horizontally and invert X shift.`);
       } else if (edgeNorm === 'top' || edgeNorm === 'bottom') {
         await job.log(LogLevel.Info, `${bindingEdge} binding: Back pages will flip rows vertically, add 180° rotation, and invert Y shift.`);
       }
@@ -287,28 +287,29 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     // Get batchId from payload
     const batchId = String(payload?.batchId ?? '');
 
-    const cutAndStackPages = impositionCutAndStack ? buildCutAndStackPageRefs(itemAssets) : [];
+    const cutAndStackDuplex = impositionCutAndStack && anyBackInks;
+    const cutAndStackPages = impositionCutAndStack ? buildCutAndStackPageRefs(itemAssets, cutAndStackDuplex) : [];
     const cutAndStackPlan = impositionCutAndStack
-      ? buildCutAndStackPlan(cutAndStackPages.length, layout.cols * layout.rows)
+      ? buildCutAndStackPlan(cutAndStackPages.length, layout.cols * layout.rows, cutAndStackDuplex)
       : null;
     if (cutAndStackPlan) {
       await job.log(
         LogLevel.Info,
-        `Cut and stack plan: ${cutAndStackPlan.perSheet} position(s) per sheet, ${cutAndStackPages.length} source page(s), ${cutAndStackPlan.sheetCount} imposed sheet(s).`
+        `Cut and stack plan: ${cutAndStackPlan.perSheet} position(s) per sheet, ${cutAndStackPages.length} ${cutAndStackDuplex ? 'duplex piece(s)' : 'source page(s)'}, ${cutAndStackPlan.sheetCount} imposed sheet(s).`
       );
     }
 
     if (numCoverPages >= 1)
       await createCoverPage(outDoc, layout, orderItems, itemAssets, perItemEmbeddedPages,
         cutAndStackPlan
-          ? buildCutAndStackSheetPlacements(layout, cutAndStackPages, 0, cutAndStackPlan.sheetCount)
+          ? buildCutAndStackSheetPlacements(layout, cutAndStackPages, 0, cutAndStackPlan.sheetCount, cutAndStackDuplex)
           : buildStaticSheetPlacements(placements, 0),
         font, boldFont, /*flip*/ false, defaultCutWpt, defaultCutHpt, bindingEdge, barcodeCache, batchId);
 
     if (numCoverPages === 2)
       await createCoverPage(outDoc, layout, orderItems, itemAssets, perItemEmbeddedPages,
         cutAndStackPlan
-          ? buildCutAndStackSheetPlacements(layout, cutAndStackPages, 1, cutAndStackPlan.sheetCount)
+          ? buildCutAndStackSheetPlacements(layout, cutAndStackPages, 1, cutAndStackPlan.sheetCount, cutAndStackDuplex)
           : buildStaticSheetPlacements(placements, 1),
         font, boldFont, /*flip*/ true, defaultCutWpt, defaultCutHpt, bindingEdge, barcodeCache, batchId);
 
@@ -326,7 +327,7 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
       const page = outDoc.addPage([sheetWpt, sheetHpt]);
       const flipPositionsThisPage = anyBackInks && (sheetIdx % 2 === 1);
       const sheetPlacements = cutAndStackPlan
-        ? buildCutAndStackSheetPlacements(layout, cutAndStackPages, sheetIdx, cutAndStackPlan.sheetCount)
+        ? buildCutAndStackSheetPlacements(layout, cutAndStackPages, sheetIdx, cutAndStackPlan.sheetCount, cutAndStackDuplex)
         : buildStaticSheetPlacements(placements, sheetIdx);
 
       await renderProductionSheet(
@@ -342,7 +343,7 @@ export async function jobArrived(_s: Switch, _f: FlowElement, job: Job) {
     const pdfBytes = await outDoc.save({ useObjectStreams: true });
     await fs.writeFile(rwPath, pdfBytes);
 
-    const base = 'Batch-' + payload.batchId + '-' + payload.artworkUrlId + '.pdf';
+    const base = buildOutputFilename(payload, orderItems);
     if ((job as any).sendToSingle) await (job as any).sendToSingle(base);
     else job.sendTo(rwPath, 0, base);
   } catch (e: any) {
@@ -385,6 +386,25 @@ type CutAndStackPageRef = { itemIdx: number; artPageIndex: number };
 
 function isTrueFlag(value: any) {
   return value === true || String(value ?? '').trim().toLowerCase() === 'true';
+}
+
+function cleanFilenamePart(value: any, fallback: string) {
+  const raw = String(value ?? '').trim();
+  const part = raw && raw.toLowerCase() !== 'null' && raw.toLowerCase() !== 'undefined' ? raw : fallback;
+  return part.replace(/[\\/:*?"<>|]+/g, '-');
+}
+
+function buildOutputFilename(payload: any, orderItems: any[]) {
+  const batchIdRaw = payload?.batchId;
+  const hasBatchId = batchIdRaw !== null && batchIdRaw !== undefined && String(batchIdRaw).trim() !== '' && String(batchIdRaw).trim().toLowerCase() !== 'null';
+  if (hasBatchId) {
+    return `Batch-${cleanFilenamePart(batchIdRaw, 'Unknown')}-${cleanFilenamePart(payload?.artworkUrlId, 'Unknown')}.pdf`;
+  }
+
+  const firstItem = orderItems[0] || {};
+  const orderId = cleanFilenamePart(payload?.orderId ?? firstItem.orderId, 'Unknown');
+  const lineId = cleanFilenamePart(payload?.lineId ?? firstItem.lineId ?? firstItem.orderItemID ?? firstItem.orderItemId ?? firstItem.id, 'Unknown');
+  return `Order-${orderId}-Line-${lineId}.pdf`;
 }
 
 function gridFit(availW: number, availH: number, cellW: number, cellH: number, gapH: number, gapV: number) {
@@ -536,15 +556,18 @@ async function drawLavenderOverlay(
   const halfW = cutW / 2, halfH = cutH / 2;
   const xL = centerX - halfW, yB = centerY - halfH;
 
-  const lavender = rgb(0.7, 0.5, 1);
-  page.drawRectangle({ x: xL, y: yB, width: cutW, height: cutH, color: lavender, opacity: 0.9 });
+  // Cover sheet overlay: solid white box (fully opaque) so artwork is hidden under the info panel.
+  const overlayColor = rgb(1, 1, 1);
+  page.drawRectangle({ x: xL, y: yB, width: cutW, height: cutH, color: overlayColor, opacity: 1 });
 
   // Apply offset to content positioning (offset from center, in inches converted to points)
   const contentCenterX = centerX + pt(offsetXIn);
   const contentCenterY = centerY + pt(offsetYIn);
 
+  // Text is black on a light grey background; the barcode background block stays paper white.
   const white = rgb(1, 1, 1);
   const black = rgb(0, 0, 0);
+  const textColor = black;
   const batchText = `BatchID: ${batchId}`;
   const idText = `OrderID: ${orderId}`;
   const itemText = `OrderItemID: ${itemId}`;
@@ -617,19 +640,19 @@ async function drawLavenderOverlay(
 
   // Draw text lines
   const batchW = boldFont.widthOfTextAtSize(batchText, textSize);
-  page.drawText(batchText, { x: contentCenterX - batchW / 2, y: currentY - textSize, size: textSize, font: boldFont, color: white });
+  page.drawText(batchText, { x: contentCenterX - batchW / 2, y: currentY - textSize, size: textSize, font: boldFont, color: textColor });
   currentY -= lh;
 
   const idW = boldFont.widthOfTextAtSize(idText, textSize);
-  page.drawText(idText, { x: contentCenterX - idW / 2, y: currentY - textSize, size: textSize, font: boldFont, color: white });
+  page.drawText(idText, { x: contentCenterX - idW / 2, y: currentY - textSize, size: textSize, font: boldFont, color: textColor });
   currentY -= lh;
 
   const itemW = font.widthOfTextAtSize(itemText, textSize);
-  page.drawText(itemText, { x: contentCenterX - itemW / 2, y: currentY - textSize, size: textSize, font, color: white });
+  page.drawText(itemText, { x: contentCenterX - itemW / 2, y: currentY - textSize, size: textSize, font, color: textColor });
   currentY -= lh;
 
   const qtyW = boldFont.widthOfTextAtSize(qtyText, textSize);
-  page.drawText(qtyText, { x: contentCenterX - qtyW / 2, y: currentY - textSize, size: textSize, font: boldFont, color: white });
+  page.drawText(qtyText, { x: contentCenterX - qtyW / 2, y: currentY - textSize, size: textSize, font: boldFont, color: textColor });
 }
 
 /** HTTP GET a PDF */
@@ -708,15 +731,18 @@ function planLayout(
   };
 }
 
-function buildCutAndStackPlan(totalPages: number, positionsPerSheet: number) {
+function buildCutAndStackPlan(totalPages: number, positionsPerSheet: number, duplex: boolean = false) {
   const perSheet = Math.max(1, positionsPerSheet);
-  const sheetCount = totalPages > 0 ? Math.ceil(totalPages / perSheet) : 0;
+  const frontSheetCount = totalPages > 0 ? Math.ceil(totalPages / perSheet) : 0;
+  const sheetCount = duplex ? frontSheetCount * 2 : frontSheetCount;
   return {
     perSheet,
     sheetCount,
     getSourceIndex(sheetIndex: number, positionIndex: number) {
       if (sheetIndex < 0 || positionIndex < 0 || sheetIndex >= sheetCount) return -1;
-      const sourceIndex = positionIndex * sheetCount + sheetIndex;
+      const sourceIndex = duplex
+        ? positionIndex * frontSheetCount + Math.floor(sheetIndex / 2)
+        : positionIndex * sheetCount + sheetIndex;
       return sourceIndex < totalPages ? sourceIndex : -1;
     }
   };
@@ -731,11 +757,12 @@ function buildStaticSheetPlacements(placements: Placement[], artPageIndex: numbe
   }));
 }
 
-function buildCutAndStackPageRefs(itemAssets: any[]): CutAndStackPageRef[] {
+function buildCutAndStackPageRefs(itemAssets: any[], duplex: boolean = false): CutAndStackPageRef[] {
   const refs: CutAndStackPageRef[] = [];
   for (let itemIdx = 0; itemIdx < itemAssets.length; itemIdx++) {
     const asset = itemAssets[itemIdx];
-    for (let artPageIndex = 0; artPageIndex < asset.pageCount; artPageIndex++) {
+    const pageStep = duplex ? 2 : 1;
+    for (let artPageIndex = 0; artPageIndex < asset.pageCount; artPageIndex += pageStep) {
       refs.push({ itemIdx, artPageIndex });
     }
   }
@@ -746,22 +773,27 @@ function buildCutAndStackSheetPlacements(
   layout: Layout,
   pageRefs: CutAndStackPageRef[],
   sheetIndex: number,
-  sheetCount: number
+  sheetCount: number,
+  duplex: boolean = false
 ): SheetPlacement[] {
-  const plan = buildCutAndStackPlan(pageRefs.length, layout.cols * layout.rows);
+  const plan = buildCutAndStackPlan(pageRefs.length, layout.cols * layout.rows, duplex);
   const effectiveSheetCount = sheetCount > 0 ? sheetCount : plan.sheetCount;
+  const frontSheetCount = duplex ? Math.ceil(effectiveSheetCount / 2) : effectiveSheetCount;
+  const duplexSideOffset = duplex ? sheetIndex % 2 : 0;
   const placements: SheetPlacement[] = [];
 
   for (let r = 0; r < layout.rows; r++) {
     for (let c = 0; c < layout.cols; c++) {
       const positionIndex = r * layout.cols + c;
-      const sourceIndex = effectiveSheetCount > 0 ? positionIndex * effectiveSheetCount + sheetIndex : -1;
+      const sourceIndex = effectiveSheetCount > 0
+        ? positionIndex * frontSheetCount + (duplex ? Math.floor(sheetIndex / 2) : sheetIndex)
+        : -1;
       const ref = sourceIndex >= 0 && sourceIndex < pageRefs.length ? pageRefs[sourceIndex] : null;
       placements.push({
         r,
         c,
         itemIdx: ref ? ref.itemIdx : null,
-        artPageIndex: ref ? ref.artPageIndex : null
+        artPageIndex: ref ? ref.artPageIndex + duplexSideOffset : null
       });
     }
   }
@@ -847,13 +879,16 @@ function getShiftAdjustments(
 }
 
 /**
- * Apply 180° rotation for back pages (all binding edges)
+ * Apply 180° rotation for back pages only on top/bottom binding edges.
  */
-function rotationForPage(it: any, rEff: number, cEff: number, flipPositionsThisPage: boolean, pageIndex: number) {
-  // First get the base rotation from the artRotation settings
+function rotationForPage(it: any, rEff: number, cEff: number, flipPositionsThisPage: boolean, pageIndex: number, bindingEdge: BindingEdge) {
   let deg = computeArtRotationDegrees(it, rEff, cEff, pageIndex);
-  // Add 180° for all back pages, regardless of binding edge
-  if (flipPositionsThisPage) deg = (deg + 180) % 360;
+  if (flipPositionsThisPage) {
+    const edge = String(bindingEdge || 'Left').toLowerCase();
+    if (edge === 'top' || edge === 'bottom') {
+      deg = (deg + 180) % 360;
+    }
+  }
   return deg;
 }
 
@@ -1369,7 +1404,7 @@ async function renderProductionSheet(
     const cellCenterX = layout.offX + cEff * (layout.cellWpt + layout.gapHpt) + layout.cellWpt / 2;
     const cellCenterY = layout.offY + rEff * (layout.cellHpt + layout.gapVpt) + layout.cellHpt / 2;
 
-    const rotDeg = rotationForPage(it, rEff, cEff, flipPositionsThisPage, plc.artPageIndex);
+    const rotDeg = rotationForPage(it, rEff, cEff, flipPositionsThisPage, plc.artPageIndex, bindingEdge);
 
     const { shiftX, shiftY } = getShiftAdjustments(bindingEdge, flipPositionsThisPage, +it.imageShiftX, +it.imageShiftY);
     const { sx, sy } = preRotationShiftFor(rotDeg, shiftX, shiftY);
@@ -1460,7 +1495,7 @@ async function createCoverPage(
     const cellCenterX = layout.offX + cEff * (layout.cellWpt + layout.gapHpt) + layout.cellWpt / 2;
     const cellCenterY = layout.offY + rEff * (layout.cellHpt + layout.gapVpt) + layout.cellHpt / 2;
 
-    const rotDeg = rotationForPage(it, rEff, cEff, flipPositionsThisPage, plc.artPageIndex);
+    const rotDeg = rotationForPage(it, rEff, cEff, flipPositionsThisPage, plc.artPageIndex, bindingEdge);
 
     // Get shift adjustments based on binding edge
     const { shiftX, shiftY } = getShiftAdjustments(bindingEdge, flipPositionsThisPage, +it.imageShiftX, +it.imageShiftY);
@@ -1474,7 +1509,8 @@ async function createCoverPage(
     const artY0 = bleedY0 + (placeH - drawH) / 2;
 
     const { x, y } = adjustXYForRotation(artX0, artY0, drawW, drawH, rotDeg);
-    page.drawPage(ep, { x, y, width: drawW, height: drawH, rotate: degrees(rotDeg) });
+    // Cover sheet artwork rendered at 50% opacity so the cover reads as a faded preview.
+    page.drawPage(ep, { x, y, width: drawW, height: drawH, rotate: degrees(rotDeg), opacity: 0.5 });
   }
 
   // Lavender overlays (only for real items) - now with quantity, barcode, and x/y offset
@@ -1482,8 +1518,14 @@ async function createCoverPage(
     if (plc.itemIdx === null) continue;
     const it = orderItems[plc.itemIdx];
 
+    // Use bleed footprint for the overlay so it covers the full placed art (matching production placement size).
     const cutWpt_i = pt(+it.cutWidthInches || 0);
     const cutHpt_i = pt(+it.cutHeightInches || 0);
+    const bleedWpt_i = pt((+it.bleedWidthInches || 0) || (+it.cutWidthInches || 0));
+    const bleedHpt_i = pt((+it.bleedHeightInches || 0) || (+it.cutHeightInches || 0));
+    const hasBleed_i = bleedWpt_i > cutWpt_i || bleedHpt_i > cutHpt_i;
+    const overlayW = hasBleed_i ? bleedWpt_i : cutWpt_i;
+    const overlayH = hasBleed_i ? bleedHpt_i : cutHpt_i;
 
     // Apply binding edge position adjustments
     const { rEff, cEff } = getEffectivePosition(plc.r, plc.c, layout, bindingEdge, flipPositionsThisPage);
@@ -1494,7 +1536,7 @@ async function createCoverPage(
     const quantity = +(it.quantity || it.Quantity || 1);
 
     await drawLavenderOverlay(
-      page, outDoc, cellCenterX, cellCenterY, cutWpt_i, cutHpt_i,
+      page, outDoc, cellCenterX, cellCenterY, overlayW, overlayH,
       String(it.orderId ?? ''), String(it.id ?? ''), quantity, batchId,
       font, boldFont, barcodeCache,
       +(it.coverSheetInfoX || 0), +(it.coverSheetInfoY || 0)
