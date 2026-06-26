@@ -1,5 +1,5 @@
 <user_message>
-Parse the attached purchase order PDF and the two JSON lists of ProductSKU's and KitSKU's with their corresponding CustomerProductIdentifiers (Customer Provided SKU's in the PO on each line) to generate the workflow response. Also attached are the available shipping methods, please use the code for the method requested, and for now just use FEDEX.
+Parse the attached purchase order PDF and the two JSON lists of ProductSKU's and KitSKU's with their corresponding CustomerProductIdentifiers (CPI) (Customer Provided SKU's in the PO on each line) to generate the workflow response. If in the PDF the value in the "Item" column is not a CPI, but there is a valid CPII noted in the description, use the valid one. Also attached are the available shipping methods, please use the code for the method requested, and for now just use UPS.
 
 **If there is however artwork links in the pdf for each line item, use the links as the artworksingle for the print item please instead, not the anchor text but the actual href on the "File Link"**
 
@@ -16,7 +16,7 @@ Return this exact structure:
   "APICall": {
     "externalOrderID": "PO number from document",
     "notes": "general order notes or empty string, include any errors with missing items from the catalog, include the Required receipt date from the PO in the notes as well",
-    "shippingMethod": "shipping method, these will all be FedEx, we are in AZ so if they say 'pick up at warehouse' and give a ship to outside of AZ, then it isn't customer pickup",
+    "shippingMethod": "shipping method, these will all be UPS, we are in AZ so if they say 'pick up at warehouse' and give a ship to outside of AZ, then it isn't customer pickup",
     "status": "{only enter NeedsAttention if an item has holdItem:true, or there is an issue like missing item from catalog, otherwise it should be New}",
     "shippingAddresses": ((
       {
@@ -42,7 +42,7 @@ Return this exact structure:
         "artworkLocal": "" {never put anything here, always empty},
         "orderItemNotes": "notes from externalProductId (if none don't include 'notes:') and include the externalProductId that was mapped to this sku, include the Required receipt date from the PO in the notes as well",
         "shippingAddresses": (()),
-        "status": "{only enter NeedsAttention if the item has holdItem:true}"
+        "status": "{only enter NeedsAttention if the item has holdItem:true, or if no artwork is provided}"
       }
     ))
   },

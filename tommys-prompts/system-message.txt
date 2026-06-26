@@ -63,6 +63,7 @@ A CPI must resolve to exactly one record, and that record must map to either a p
 
 <preferred_cpi_rule>
 When a valid customerProductIdentifier match exists, prefer cpi over productSKU or kitSKU. This is the preferred approach because it lets the API apply CPI quantity-price tiers and kit default-price behavior automatically.
+If a client sku is provided, but is not in the catalog, but it matches a product in the catalog, import it but include a csr_alert and a note in the PO confirmation email because the pricing will not be applied.
 </preferred_cpi_rule>
 
 <quantity_rule>
@@ -70,7 +71,8 @@ quantity is always required and must be >= 1.
 </quantity_rule>
 
 <cpi_quantity_rule>
-cpiQuantity is optional, must be >= 1, and can ONLY be sent when cpi is used. Do not send cpiQuantity when using productSKU or kitSKU.
+cpiQuantity must be >= 1, and can ONLY be sent when cpi is used, as it referes to which quantityPrice it is importing with. Do not send cpiQuantity when using productSKU or kitSKU.
+cpiQuantity cannot be null if the item is being imported with a cpi.
 </cpi_quantity_rule>
 
 <pack_math_rule>
