@@ -388,6 +388,19 @@ function isTrueFlag(value: any) {
   return value === true || String(value ?? '').trim().toLowerCase() === 'true';
 }
 
+function finiteNumberOrDefault(value: any, fallback: number) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : fallback;
+}
+
+function cropMarkDistanceInches(it: any, fallbackIt?: any) {
+  return Math.max(0, finiteNumberOrDefault(it?.cropMarkDistance, finiteNumberOrDefault(fallbackIt?.cropMarkDistance, 0.25)));
+}
+
+function cropMarkSizeInches(it: any, fallbackIt?: any) {
+  return Math.max(0, finiteNumberOrDefault(it?.cropMarkSize, finiteNumberOrDefault(fallbackIt?.cropMarkSize, 0.125)));
+}
+
 function cleanFilenamePart(value: any, fallback: string) {
   const raw = String(value ?? '').trim();
   const part = raw && raw.toLowerCase() !== 'null' && raw.toLowerCase() !== 'undefined' ? raw : fallback;
@@ -506,12 +519,14 @@ function drawIndividualCrops(
   gapHorizontal: number,
   gapVertical: number
 ) {
-  const off = pt(gapIn);
-  const perimeterLen = pt(lenIn);
+  const off = pt(Math.max(0, gapIn));
+  const perimeterLen = pt(Math.max(0, lenIn));
+  if (perimeterLen <= 0 || strokePt <= 0) return;
+
   const maxInteriorLenH = Math.max(0, (gapHorizontal - off * 2) * 0.4);
   const maxInteriorLenV = Math.max(0, (gapVertical - off * 2) * 0.4);
-  const interiorLenH = Math.min(pt(0.03125), maxInteriorLenH);
-  const interiorLenV = Math.min(pt(0.03125), maxInteriorLenV);
+  const interiorLenH = Math.min(perimeterLen, maxInteriorLenH);
+  const interiorLenV = Math.min(perimeterLen, maxInteriorLenV);
 
   const k = rgb(0, 0, 0);
   const halfW = cutW / 2, halfH = cutH / 2;
@@ -1365,8 +1380,11 @@ async function renderProductionSheet(
   // --- CROPS (middle layer) ---
   for (const plc of placements) {
     const hasItem = plc.itemIdx !== null;
-    const cutWpt_i = hasItem ? pt(+orderItems[plc.itemIdx!].cutWidthInches || 0) : defaultCutWpt;
-    const cutHpt_i = hasItem ? pt(+orderItems[plc.itemIdx!].cutHeightInches || 0) : defaultCutHpt;
+    const cropItem = hasItem ? orderItems[plc.itemIdx!] : orderItems[0];
+    const cutWpt_i = hasItem ? pt(+cropItem.cutWidthInches || 0) : defaultCutWpt;
+    const cutHpt_i = hasItem ? pt(+cropItem.cutHeightInches || 0) : defaultCutHpt;
+    const cropMarkDistance = cropMarkDistanceInches(cropItem, orderItems[0]);
+    const cropMarkSize = cropMarkSizeInches(cropItem, orderItems[0]);
 
     const { rEff, cEff } = getEffectivePosition(plc.r, plc.c, layout, bindingEdge, flipPositionsThisPage);
     const cellCenterX = layout.offX + cEff * (layout.cellWpt + layout.gapHpt) + layout.cellWpt / 2;
@@ -1377,7 +1395,7 @@ async function renderProductionSheet(
 
     drawIndividualCrops(
       page, cellCenterX, cellCenterY, cutWpt_i, cutHpt_i,
-      0.25, 0.125, 0.5, isLeftEdge, isRightEdge, isBottomEdge, isTopEdge, layout.gapHpt, layout.gapVpt
+      cropMarkDistance, cropMarkSize, 0.5, isLeftEdge, isRightEdge, isBottomEdge, isTopEdge, layout.gapHpt, layout.gapVpt
     );
   }
 
@@ -1454,8 +1472,11 @@ async function createCoverPage(
   // Crops for ALL placements (blanks included)
   for (const plc of placements) {
     const hasItem = plc.itemIdx !== null;
-    const cutWpt_i = hasItem ? pt(+orderItems[plc.itemIdx!].cutWidthInches || 0) : defaultCutWpt;
-    const cutHpt_i = hasItem ? pt(+orderItems[plc.itemIdx!].cutHeightInches || 0) : defaultCutHpt;
+    const cropItem = hasItem ? orderItems[plc.itemIdx!] : orderItems[0];
+    const cutWpt_i = hasItem ? pt(+cropItem.cutWidthInches || 0) : defaultCutWpt;
+    const cutHpt_i = hasItem ? pt(+cropItem.cutHeightInches || 0) : defaultCutHpt;
+    const cropMarkDistance = cropMarkDistanceInches(cropItem, orderItems[0]);
+    const cropMarkSize = cropMarkSizeInches(cropItem, orderItems[0]);
 
     // Apply binding edge position adjustments
     const { rEff, cEff } = getEffectivePosition(plc.r, plc.c, layout, bindingEdge, flipPositionsThisPage);
@@ -1467,7 +1488,7 @@ async function createCoverPage(
     const isBottomEdge = rEff === 0, isTopEdge = rEff === layout.rows - 1;
 
     drawIndividualCrops(page, cellCenterX, cellCenterY, cutWpt_i, cutHpt_i,
-      0.25, 0.125, 0.5, isLeftEdge, isRightEdge, isBottomEdge, isTopEdge, layout.gapHpt, layout.gapVpt);
+      cropMarkDistance, cropMarkSize, 0.5, isLeftEdge, isRightEdge, isBottomEdge, isTopEdge, layout.gapHpt, layout.gapVpt);
   }
 
   // Artwork (only where present)
